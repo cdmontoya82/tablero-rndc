@@ -10,6 +10,16 @@ import plotly.graph_objects as go
 import glob
 import os
 import traceback
+import gc
+
+# ─── Columnas necesarias (optimización de memoria) ───────────────────────────
+STATS_COLUMNS = [
+    "MES", "CONFIG_VEHICULO", "DEPARTAMENTOORIGEN", "DEPARTAMENTODESTINO",
+    "MERCANCIA", "NATURALEZACARGA", "VIAJESTOTALES", "KILOGRAMOS", "VALORESPAGADOS",
+]
+SICETAC_COLUMNS = [
+    "PERIODO", "NOMORIGEN", "NOMDESTINO", "CONFIGURACION", "VALOR", "DISTANCIA",
+]
 
 # ─── Configuración de página ─────────────────────────────────────────────────
 st.set_page_config(
@@ -87,10 +97,10 @@ def load_estadisticas():
     data_dir = _get_data_dir()
     frames = []
 
-    # Cargar parquet
+    # Cargar parquet (solo columnas necesarias para ahorrar memoria)
     for f in sorted(glob.glob(os.path.join(data_dir, "EstadisticasRNDC_*.parquet"))):
         try:
-            df = pd.read_parquet(f)
+            df = pd.read_parquet(f, columns=STATS_COLUMNS)
             frames.append(df)
             _load_log.append(f"OK: {os.path.basename(f)} ({len(df)} filas)")
         except Exception as e:
@@ -99,7 +109,7 @@ def load_estadisticas():
     # Cargar xlsx con mismas columnas
     for f in sorted(glob.glob(os.path.join(data_dir, "EstadisticasRNDC_*.xlsx"))):
         try:
-            df = pd.read_excel(f)
+            df = pd.read_excel(f, usecols=lambda c: c in STATS_COLUMNS)
             frames.append(df)
             _load_log.append(f"OK: {os.path.basename(f)} ({len(df)} filas)")
         except Exception as e:
@@ -165,14 +175,14 @@ def load_sicetac():
 
     for f in sorted(glob.glob(os.path.join(data_dir, "Sicetac_*.parquet"))):
         try:
-            frames.append(pd.read_parquet(f))
+            frames.append(pd.read_parquet(f, columns=SICETAC_COLUMNS))
             _load_log.append(f"OK sicetac: {os.path.basename(f)}")
         except Exception as e:
             _load_log.append(f"ERROR sicetac {os.path.basename(f)}: {e}")
 
     for f in sorted(glob.glob(os.path.join(data_dir, "Sicetac_*.xlsx"))):
         try:
-            frames.append(pd.read_excel(f))
+            frames.append(pd.read_excel(f, usecols=lambda c: c in SICETAC_COLUMNS))
             _load_log.append(f"OK sicetac: {os.path.basename(f)}")
         except Exception as e:
             _load_log.append(f"ERROR sicetac {os.path.basename(f)}: {e}")
@@ -269,6 +279,8 @@ try:
 except Exception as e:
     st.error(f"Error cargando Costos FP: {e}")
     df_costos = pd.DataFrame()
+
+gc.collect()
 
 # ─── Sidebar ─────────────────────────────────────────────────────────────────
 st.sidebar.title("🚛 Tablero RNDC")
