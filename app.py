@@ -9,6 +9,7 @@ import plotly.express as px
 import plotly.graph_objects as go
 import glob
 import os
+import traceback
 
 # ─── Configuración de página ─────────────────────────────────────────────────
 st.set_page_config(
@@ -62,23 +63,50 @@ st.markdown("""
 
 
 # ─── Funciones de carga de datos ──────────────────────────────────────────────
+# Variable global para diagnóstico
+_load_log = []
+
+
+def _get_data_dir():
+    """Obtiene la ruta a la carpeta data de forma robusta."""
+    # Intentar con __file__ primero
+    try:
+        base = os.path.dirname(os.path.abspath(__file__))
+    except NameError:
+        base = os.getcwd()
+    data_dir = os.path.join(base, "data")
+    # Si no existe, intentar con cwd
+    if not os.path.isdir(data_dir):
+        data_dir = os.path.join(os.getcwd(), "data")
+    return data_dir
+
+
 @st.cache_data(ttl=3600)
 def load_estadisticas():
     """Carga todos los archivos EstadisticasRNDC (parquet y xlsx)."""
-    data_dir = os.path.join(os.path.dirname(__file__), "data")
+    data_dir = _get_data_dir()
     frames = []
 
     # Cargar parquet
     for f in sorted(glob.glob(os.path.join(data_dir, "EstadisticasRNDC_*.parquet"))):
-        df = pd.read_parquet(f)
-        frames.append(df)
+        try:
+            df = pd.read_parquet(f)
+            frames.append(df)
+            _load_log.append(f"OK: {os.path.basename(f)} ({len(df)} filas)")
+        except Exception as e:
+            _load_log.append(f"ERROR parquet {os.path.basename(f)}: {e}")
 
     # Cargar xlsx con mismas columnas
     for f in sorted(glob.glob(os.path.join(data_dir, "EstadisticasRNDC_*.xlsx"))):
-        df = pd.read_excel(f)
-        frames.append(df)
+        try:
+            df = pd.read_excel(f)
+            frames.append(df)
+            _load_log.append(f"OK: {os.path.basename(f)} ({len(df)} filas)")
+        except Exception as e:
+            _load_log.append(f"ERROR xlsx {os.path.basename(f)}: {e}")
 
     if not frames:
+        _load_log.append("SIN DATOS: No se encontraron archivos EstadisticasRNDC")
         return pd.DataFrame()
 
     df = pd.concat(frames, ignore_index=True)
@@ -99,22 +127,27 @@ def load_estadisticas():
 @st.cache_data(ttl=3600)
 def load_ranking():
     """Carga TODOS los archivos de ranking por empresa y los concatena."""
-    data_dir = os.path.join(os.path.dirname(__file__), "data")
+    data_dir = _get_data_dir()
     files = glob.glob(os.path.join(data_dir, "*.xlsx"))
     frames = []
     for f in sorted(files):
         basename = os.path.basename(f)
         # Excluir archivos que NO son ranking
         if any(kw in basename for kw in ["Estadisticas", "Costo", "Rutas", "Sicetac"]):
+            _load_log.append(f"SKIP ranking: {basename}")
             continue
         try:
             df = pd.read_excel(f)
             if "Nombre Empresa" in df.columns:
                 frames.append(df)
-        except Exception:
-            continue
+                _load_log.append(f"OK ranking: {basename} ({len(df)} filas)")
+            else:
+                _load_log.append(f"SKIP ranking (sin col Nombre Empresa): {basename}")
+        except Exception as e:
+            _load_log.append(f"ERROR ranking {basename}: {e}")
 
     if not frames:
+        _load_log.append("SIN DATOS: No se encontraron archivos de ranking")
         return pd.DataFrame()
 
     df = pd.concat(frames, ignore_index=True)
@@ -127,15 +160,25 @@ def load_ranking():
 @st.cache_data(ttl=3600)
 def load_sicetac():
     """Carga TODOS los archivos SICETAC y los concatena."""
-    data_dir = os.path.join(os.path.dirname(__file__), "data")
+    data_dir = _get_data_dir()
     frames = []
 
     for f in sorted(glob.glob(os.path.join(data_dir, "Sicetac_*.parquet"))):
-        frames.append(pd.read_parquet(f))
+        try:
+            frames.append(pd.read_parquet(f))
+            _load_log.append(f"OK sicetac: {os.path.basename(f)}")
+        except Exception as e:
+            _load_log.append(f"ERROR sicetac {os.path.basename(f)}: {e}")
+
     for f in sorted(glob.glob(os.path.join(data_dir, "Sicetac_*.xlsx"))):
-        frames.append(pd.read_excel(f))
+        try:
+            frames.append(pd.read_excel(f))
+            _load_log.append(f"OK sicetac: {os.path.basename(f)}")
+        except Exception as e:
+            _load_log.append(f"ERROR sicetac {os.path.basename(f)}: {e}")
 
     if not frames:
+        _load_log.append("SIN DATOS: No se encontraron archivos SICETAC")
         return pd.DataFrame()
 
     df = pd.concat(frames, ignore_index=True)
@@ -147,16 +190,18 @@ def load_sicetac():
 @st.cache_data(ttl=3600)
 def load_costos_fp():
     """Carga TODOS los archivos de costos de flota propia y los concatena."""
-    data_dir = os.path.join(os.path.dirname(__file__), "data")
+    data_dir = _get_data_dir()
     frames = []
 
     for f in sorted(glob.glob(os.path.join(data_dir, "Costo ruta flota propia*.xlsx"))):
         try:
             frames.append(pd.read_excel(f))
-        except Exception:
-            continue
+            _load_log.append(f"OK costos: {os.path.basename(f)}")
+        except Exception as e:
+            _load_log.append(f"ERROR costos {os.path.basename(f)}: {e}")
 
     if not frames:
+        _load_log.append("SIN DATOS: No se encontraron archivos de costos FP")
         return pd.DataFrame()
 
     df = pd.concat(frames, ignore_index=True)
@@ -201,14 +246,32 @@ def chart_layout(fig, title="", height=400):
 
 
 # ─── Carga de datos ──────────────────────────────────────────────────────────
-df_stats = load_estadisticas()
-df_ranking = load_ranking()
-df_sicetac = load_sicetac()
-df_costos = load_costos_fp()
+try:
+    df_stats = load_estadisticas()
+except Exception as e:
+    st.error(f"Error cargando Estadísticas: {e}")
+    df_stats = pd.DataFrame()
+
+try:
+    df_ranking = load_ranking()
+except Exception as e:
+    st.error(f"Error cargando Ranking: {e}")
+    df_ranking = pd.DataFrame()
+
+try:
+    df_sicetac = load_sicetac()
+except Exception as e:
+    st.error(f"Error cargando SICETAC: {e}")
+    df_sicetac = pd.DataFrame()
+
+try:
+    df_costos = load_costos_fp()
+except Exception as e:
+    st.error(f"Error cargando Costos FP: {e}")
+    df_costos = pd.DataFrame()
 
 # ─── Sidebar ─────────────────────────────────────────────────────────────────
-st.sidebar.image("https://img.icons8.com/fluency/48/truck.png", width=40)
-st.sidebar.title("Tablero RNDC")
+st.sidebar.title("🚛 Tablero RNDC")
 st.sidebar.caption("Edinsa - Estadísticas de transporte")
 
 pagina = st.sidebar.radio(
@@ -829,3 +892,25 @@ elif pagina == "📋 Tabla Consolidada":
 st.sidebar.divider()
 st.sidebar.caption("Datos: RNDC - Ministerio de Transporte")
 st.sidebar.caption("Desarrollado para Edinsa")
+
+# ─── Diagnóstico (expandible) ───────────────────────────────────────────────
+with st.sidebar.expander("🔧 Diagnóstico"):
+    data_dir = _get_data_dir()
+    st.write(f"**Carpeta data:** `{data_dir}`")
+    st.write(f"**Existe:** {os.path.isdir(data_dir)}")
+    if os.path.isdir(data_dir):
+        archivos = os.listdir(data_dir)
+        st.write(f"**Archivos encontrados:** {len(archivos)}")
+        for a in sorted(archivos):
+            size_kb = os.path.getsize(os.path.join(data_dir, a)) / 1024
+            st.write(f"- {a} ({size_kb:.0f} KB)")
+    st.divider()
+    st.write(f"**Estadísticas:** {df_stats.shape[0]} filas")
+    st.write(f"**Ranking:** {df_ranking.shape[0]} filas")
+    st.write(f"**SICETAC:** {df_sicetac.shape[0]} filas")
+    st.write(f"**Costos FP:** {df_costos.shape[0]} filas")
+    if _load_log:
+        st.divider()
+        st.write("**Log de carga:**")
+        for msg in _load_log:
+            st.write(f"- {msg}")
