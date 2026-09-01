@@ -267,6 +267,13 @@ def load_sicetac():
     return df
 
 
+FP_LOAD_COLS = [
+    "fecha", "Origen", "Destino", "Operación",
+    "Flete Calculado carrocería", "costo cargue", "Costo descargue",
+    "MUNICIPIO_ORIGEN", "MUNICIPIO_DESTINO",
+]
+
+
 @st.cache_data(ttl=3600)
 def load_costos_fp():
     data_dir = _get_data_dir()
@@ -274,8 +281,10 @@ def load_costos_fp():
 
     for f in sorted(glob.glob(os.path.join(data_dir, "Costo ruta flota propia*.xlsx"))):
         try:
-            frames.append(pd.read_excel(f))
-            _load_log.append(f"OK costos: {os.path.basename(f)}")
+            raw = pd.read_excel(f, usecols=lambda c: c in FP_LOAD_COLS)
+            frames.append(raw)
+            _load_log.append(f"OK costos: {os.path.basename(f)} ({len(raw)} filas)")
+            del raw
         except Exception as e:
             _load_log.append(f"ERROR costos {os.path.basename(f)}: {e}")
 
@@ -286,10 +295,26 @@ def load_costos_fp():
     df = pd.concat(frames, ignore_index=True)
     del frames
     gc.collect()
+
     if "fecha" in df.columns:
         df = df.drop_duplicates()
         df["fecha"] = pd.to_datetime(df["fecha"], errors="coerce")
         df["MES_FP"] = df["fecha"].dt.strftime("%Y%m")
+
+    # Calcular flete sin cargue ni descargue
+    if "Flete Calculado carrocería" in df.columns:
+        df["Flete_sin_CyD"] = (
+            df["Flete Calculado carrocería"]
+            - df["costo cargue"].fillna(0)
+            - df["Costo descargue"].fillna(0)
+        )
+
+    # Normalizar municipios (mayúsculas, sin espacios extra)
+    for col in ["MUNICIPIO_ORIGEN", "MUNICIPIO_DESTINO"]:
+        if col in df.columns:
+            df[col] = df[col].astype(str).str.strip().str.upper()
+            df.loc[df[col] == "NAN", col] = None
+
     return df
 
 
@@ -609,17 +634,20 @@ elif pagina == "📦 Estadísticas de Carga":
         total_tons = df_f["TONELADAS"].sum()
         total_flete = df_f["VALORESPAGADOS"].sum()
         viajes_con_valor = df_f["VIAJES_CON_VALOR"].sum()
-        flete_prom_mes = total_flete / max(viajes_con_valor, 1)
+        flete_prom = total_flete / max(viajes_con_valor, 1)
 
-        # Flete pagado "por empresa" = flete total de EDINSA (si existe en los datos)
-        # Como los stats no tienen empresa, mostramos flete total
-        flete_total_mill = total_flete / 1_000_000
+        # Promedio de flete por mes (promedio de los promedios mensuales)
+        df_prom_mes = df_f.groupby("MES", observed=True).agg(
+            V=("VALORESPAGADOS", "sum"), VC=("VIAJES_CON_VALOR", "sum"),
+        )
+        df_prom_mes["prom"] = df_prom_mes["V"] / df_prom_mes["VC"].replace(0, 1)
+        flete_prom_mensual = df_prom_mes["prom"].mean() if len(df_prom_mes) > 0 else 0
 
         col1, col2, col3, col4 = st.columns(4)
         col1.metric("Viajes", f"{total_viajes:,.0f}")
         col2.metric("Toneladas totales", f"{total_tons:,.0f}")
-        col3.metric("Flete promedio mes", f"{flete_prom_mes:,.0f}")
-        col4.metric("Flete pagado total", f"{flete_total_mill:,.1f} mill.")
+        col3.metric("Flete promedio", f"${flete_prom:,.0f}")
+        col4.metric("Flete promedio mes", f"${flete_prom_mensual:,.0f}")
 
         st.divider()
 
@@ -717,119 +745,146 @@ elif pagina == "📦 Estadísticas de Carga":
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# PÁGINA 3: COMPARATIVO FP Y FM
+# PÁGINA 3: COMPARATIVO FLETES
 # ══════════════════════════════════════════════════════════════════════════════
 elif pagina == "💰 Comparativo FP y FM":
-    st.title("Comparativo FP y FM")
-    st.caption("Compara Flete Mercado (RNDC), Flete Flota Propia y tarifa SICETAC por ruta")
+    st.title("Comparativo de Fletes")
+    st.caption("Flete Mercado (Estadísticas RNDC) · Nuestro Flete (sin cargue ni descargue) · Tarifa SICETAC  —  Estaca (3S3), Carga Normal")
 
     has_fm = not df_stats.empty
     has_fp = not df_costos.empty
     has_sic = not df_sicetac.empty
 
+    # Verificar que el archivo FP tenga las columnas de municipio
+    fp_has_muni = (
+        has_fp
+        and "MUNICIPIO_ORIGEN" in df_costos.columns
+        and "MUNICIPIO_DESTINO" in df_costos.columns
+        and df_costos["MUNICIPIO_ORIGEN"].notna().any()
+    )
+
     if not has_fm and not has_fp and not has_sic:
         st.warning("No se encontraron datos para la comparación.")
     else:
+        if has_fp and not fp_has_muni:
+            st.warning(
+                "⚠️ El archivo de costos propios no tiene las columnas **MUNICIPIO_ORIGEN** y **MUNICIPIO_DESTINO**. "
+                "Agrega estas columnas al Excel con el formato 'CIUDAD DEPARTAMENTO' (ej: SESQUILE CUNDINAMARCA) "
+                "para poder cruzar con Estadísticas RNDC y SICETAC."
+            )
+
+        # ── Pre-filtrar por estaca (3S3) y carga normal ─────────────────────
+        # Estadísticas RNDC: filtrar por config 3S3 y Carga Normal
+        if has_fm:
+            df_fm_base = df_stats[
+                (df_stats["COD_CONFIG_VEHICULO"] == "3S3")
+                & (df_stats["NATURALEZACARGA"].str.upper().str.contains("NORMAL", na=False))
+            ].copy()
+        else:
+            df_fm_base = pd.DataFrame()
+
+        # SICETAC: filtrar por config 3S3
+        if has_sic:
+            df_sic_base = df_sicetac[df_sicetac["CONFIGURACION"] == "3S3"].copy()
+        else:
+            df_sic_base = pd.DataFrame()
+
+        # ── Construir listas de municipios para filtros ──────────────────────
+        # Unir municipios de todas las fuentes disponibles
+        muni_orig_set = set()
+        muni_dest_set = set()
+
+        if not df_fm_base.empty:
+            muni_orig_set.update(df_fm_base["MUNICIPIOORIGEN"].dropna().unique())
+            muni_dest_set.update(df_fm_base["MUNICIPIODESTINO"].dropna().unique())
+        if has_sic and not df_sic_base.empty:
+            muni_orig_set.update(df_sic_base["NOMORIGEN"].dropna().unique())
+            muni_dest_set.update(df_sic_base["NOMDESTINO"].dropna().unique())
+        if fp_has_muni:
+            muni_orig_set.update(df_costos["MUNICIPIO_ORIGEN"].dropna().unique())
+            muni_dest_set.update(df_costos["MUNICIPIO_DESTINO"].dropna().unique())
+
         # ── Filtros ──────────────────────────────────────────────────────────
         col_f1, col_f2 = st.columns(2)
-
-        if has_fm:
-            config_map = (
-                df_stats[["COD_CONFIG_VEHICULO", "CONFIG_VEHICULO"]]
-                .drop_duplicates().sort_values("CONFIG_VEHICULO")
-            )
-            config_map = config_map[config_map["CONFIG_VEHICULO"].str.len() > 0]
-            config_options = ["Todos"] + config_map["CONFIG_VEHICULO"].tolist()
-        else:
-            config_options = ["Todos"]
-            config_map = pd.DataFrame(columns=["COD_CONFIG_VEHICULO", "CONFIG_VEHICULO"])
-
         with col_f1:
-            config_sel = st.selectbox("CONFIG_VEHICULO", config_options, key="comp_config")
+            muni_orig_sel = st.selectbox(
+                "Municipio origen", ["Todos"] + sorted(muni_orig_set), key="comp_orig"
+            )
         with col_f2:
-            if has_fm:
-                nat_options = ["Todos"] + sorted(df_stats["NATURALEZACARGA"].dropna().unique().tolist())
+            # Filtrar destinos según origen seleccionado
+            if muni_orig_sel != "Todos":
+                dest_set = set()
+                if not df_fm_base.empty:
+                    dest_set.update(
+                        df_fm_base[df_fm_base["MUNICIPIOORIGEN"] == muni_orig_sel]["MUNICIPIODESTINO"]
+                        .dropna().unique()
+                    )
+                if not df_sic_base.empty:
+                    dest_set.update(
+                        df_sic_base[df_sic_base["NOMORIGEN"] == muni_orig_sel]["NOMDESTINO"]
+                        .dropna().unique()
+                    )
+                if fp_has_muni:
+                    dest_set.update(
+                        df_costos[df_costos["MUNICIPIO_ORIGEN"] == muni_orig_sel]["MUNICIPIO_DESTINO"]
+                        .dropna().unique()
+                    )
+                muni_dest_options = sorted(dest_set)
             else:
-                nat_options = ["Todos"]
-            nat_sel = st.selectbox("Naturaleza de la carga", nat_options, key="comp_nat")
+                muni_dest_options = sorted(muni_dest_set)
 
-        cod_config_sel = None
-        if config_sel != "Todos":
-            match = config_map[config_map["CONFIG_VEHICULO"] == config_sel]
-            if not match.empty:
-                cod_config_sel = match.iloc[0]["COD_CONFIG_VEHICULO"]
-
-        col_f3, col_f4 = st.columns(2)
-        if has_fm:
-            df_fm_filt = df_stats.copy()
-            if config_sel != "Todos":
-                df_fm_filt = df_fm_filt[df_fm_filt["CONFIG_VEHICULO"] == config_sel]
-            if nat_sel != "Todos":
-                df_fm_filt = df_fm_filt[df_fm_filt["NATURALEZACARGA"] == nat_sel]
-            muni_orig_options = sorted(df_fm_filt["MUNICIPIOORIGEN"].dropna().unique().tolist())
-        else:
-            muni_orig_options = []
-            df_fm_filt = pd.DataFrame()
-
-        with col_f3:
-            muni_orig_sel = st.selectbox("Municipio origen", ["Todos"] + muni_orig_options, key="comp_orig")
-        with col_f4:
-            if muni_orig_sel != "Todos" and has_fm:
-                muni_dest_options = sorted(
-                    df_fm_filt[df_fm_filt["MUNICIPIOORIGEN"] == muni_orig_sel]["MUNICIPIODESTINO"]
-                    .dropna().unique().tolist())
-            elif has_fm:
-                muni_dest_options = sorted(df_fm_filt["MUNICIPIODESTINO"].dropna().unique().tolist())
-            else:
-                muni_dest_options = []
-            muni_dest_sel = st.selectbox("Municipio destino", ["Todos"] + muni_dest_options, key="comp_dest")
+            muni_dest_sel = st.selectbox(
+                "Municipio destino", ["Todos"] + muni_dest_options, key="comp_dest"
+            )
 
         st.divider()
 
-        # ── Calcular Flete Mercado ───────────────────────────────────────────
-        if has_fm:
-            df_fm = df_stats.copy()
-            if config_sel != "Todos":
-                df_fm = df_fm[df_fm["CONFIG_VEHICULO"] == config_sel]
-            if nat_sel != "Todos":
-                df_fm = df_fm[df_fm["NATURALEZACARGA"] == nat_sel]
+        # ── Calcular Flete Mercado (Estadísticas RNDC) ───────────────────────
+        if not df_fm_base.empty:
+            df_fm = df_fm_base.copy()
             if muni_orig_sel != "Todos":
                 df_fm = df_fm[df_fm["MUNICIPIOORIGEN"] == muni_orig_sel]
             if muni_dest_sel != "Todos":
                 df_fm = df_fm[df_fm["MUNICIPIODESTINO"] == muni_dest_sel]
 
-            fm_agg = df_fm.groupby(["MES", "MUNICIPIOORIGEN", "MUNICIPIODESTINO"], as_index=False, observed=True).agg(
-                VIAJES=("VIAJESTOTALES", "sum"), VALOR=("VALORESPAGADOS", "sum"),
-                VIAJES_CV=("VIAJES_CON_VALOR", "sum"),
-            )
-            fm_agg["Promedio FMercado"] = fm_agg["VALOR"] / fm_agg["VIAJES_CV"].replace(0, 1)
+            if not df_fm.empty:
+                fm_agg = df_fm.groupby(
+                    ["MES", "MUNICIPIOORIGEN", "MUNICIPIODESTINO"], as_index=False, observed=True
+                ).agg(
+                    VALOR=("VALORESPAGADOS", "sum"),
+                    VIAJES_CV=("VIAJES_CON_VALOR", "sum"),
+                )
+                fm_agg["Flete Mercado"] = fm_agg["VALOR"] / fm_agg["VIAJES_CV"].replace(0, 1)
+            else:
+                fm_agg = pd.DataFrame()
         else:
             fm_agg = pd.DataFrame()
 
-        # ── Calcular Flete Propio ────────────────────────────────────────────
-        if has_fp:
+        # ── Calcular Nuestro Flete (FP sin cargue ni descargue) ──────────────
+        if fp_has_muni and "Flete_sin_CyD" in df_costos.columns:
             df_fp = df_costos.copy()
             if muni_orig_sel != "Todos":
-                ciudad_orig = muni_orig_sel.split()[0] if muni_orig_sel else ""
-                df_fp = df_fp[df_fp["Origen"].str.contains(ciudad_orig, case=False, na=False)]
+                df_fp = df_fp[df_fp["MUNICIPIO_ORIGEN"] == muni_orig_sel]
             if muni_dest_sel != "Todos":
-                ciudad_dest = muni_dest_sel.split()[0] if muni_dest_sel else ""
-                df_fp = df_fp[df_fp["Destino"].str.contains(ciudad_dest, case=False, na=False)]
+                df_fp = df_fp[df_fp["MUNICIPIO_DESTINO"] == muni_dest_sel]
 
             if not df_fp.empty and "MES_FP" in df_fp.columns:
-                fp_agg = df_fp.groupby(["MES_FP"], as_index=False).agg(
-                    **{"Promedio FPropio": ("Flete Calculado carrocería", "mean")})
-                fp_agg = fp_agg.rename(columns={"MES_FP": "MES"})
+                fp_agg = df_fp.groupby(
+                    ["MES_FP", "MUNICIPIO_ORIGEN", "MUNICIPIO_DESTINO"], as_index=False
+                ).agg(**{"Nuestro Flete": ("Flete_sin_CyD", "mean")})
+                fp_agg = fp_agg.rename(columns={
+                    "MES_FP": "MES",
+                    "MUNICIPIO_ORIGEN": "MUNICIPIOORIGEN",
+                    "MUNICIPIO_DESTINO": "MUNICIPIODESTINO",
+                })
             else:
                 fp_agg = pd.DataFrame()
         else:
             fp_agg = pd.DataFrame()
 
         # ── Calcular Promedio SICETAC ────────────────────────────────────────
-        if has_sic:
-            df_sic = df_sicetac.copy()
-            if cod_config_sel is not None:
-                df_sic = df_sic[df_sic["CONFIGURACION"] == cod_config_sel]
+        if not df_sic_base.empty:
+            df_sic = df_sic_base.copy()
             if muni_orig_sel != "Todos":
                 df_sic = df_sic[df_sic["NOMORIGEN"] == muni_orig_sel]
             if muni_dest_sel != "Todos":
@@ -839,56 +894,93 @@ elif pagina == "💰 Comparativo FP y FM":
                 sic_agg = df_sic.groupby("PERIODO", as_index=False, observed=True).agg(
                     VALOR_SUMA=("VALOR_SUMA", "sum"), CONTEO=("CONTEO", "sum"),
                 )
-                sic_agg["Promedio Sicetac"] = sic_agg["VALOR_SUMA"] / sic_agg["CONTEO"].replace(0, 1)
+                sic_agg["SICETAC"] = sic_agg["VALOR_SUMA"] / sic_agg["CONTEO"].replace(0, 1)
                 sic_agg = sic_agg.rename(columns={"PERIODO": "MES"})
             else:
                 sic_agg = pd.DataFrame()
         else:
             sic_agg = pd.DataFrame()
 
-        # ── Tabla comparativa ────────────────────────────────────────────────
-        st.subheader("Comparativo FP y FM")
+        # ── Construir tabla comparativa ──────────────────────────────────────
+        st.subheader("Comparativo de Fletes")
 
+        # Base: usar periodos de todas las fuentes disponibles
+        all_periodos = set()
         if not fm_agg.empty:
-            tabla = fm_agg.groupby(["MES", "MUNICIPIOORIGEN", "MUNICIPIODESTINO"], as_index=False, observed=True).agg(
-                **{"Promedio FMercado": ("Promedio FMercado", "mean")})
-        else:
-            tabla = pd.DataFrame(columns=["MES", "MUNICIPIOORIGEN", "MUNICIPIODESTINO", "Promedio FMercado"])
+            all_periodos.update(fm_agg["MES"].unique())
+        if not fp_agg.empty:
+            all_periodos.update(fp_agg["MES"].unique())
+        if not sic_agg.empty:
+            all_periodos.update(sic_agg["MES"].unique())
 
-        if not fp_agg.empty and not tabla.empty:
-            tabla = tabla.merge(fp_agg[["MES", "Promedio FPropio"]], on="MES", how="left")
-        elif "Promedio FPropio" not in tabla.columns:
-            tabla["Promedio FPropio"] = None
-
-        if not sic_agg.empty and not tabla.empty:
-            tabla = tabla.merge(sic_agg[["MES", "Promedio Sicetac"]], on="MES", how="left")
-        elif "Promedio Sicetac" not in tabla.columns:
-            tabla["Promedio Sicetac"] = None
-
-        if tabla.empty:
+        if not all_periodos:
             st.info("No hay datos para la combinación de filtros seleccionada. Selecciona un municipio de origen y destino.")
         else:
-            tabla = tabla.sort_values("MES")
-            tabla_display = tabla.rename(columns={
-                "MES": "Periodo", "MUNICIPIOORIGEN": "Municipio origen", "MUNICIPIODESTINO": "Municipio destino",
-            })
+            tabla = pd.DataFrame({"MES": sorted(all_periodos)})
 
-            total_dict = {"Periodo": "Total", "Municipio origen": "", "Municipio destino": ""}
-            for col in ["Promedio FMercado", "Promedio FPropio", "Promedio Sicetac"]:
-                if col in tabla_display.columns:
-                    vals = tabla_display[col].dropna()
-                    total_dict[col] = vals.mean() if len(vals) > 0 else None
+            # Agregar Flete Mercado
+            if not fm_agg.empty:
+                fm_por_mes = fm_agg.groupby("MES", as_index=False, observed=True).agg(
+                    **{"Flete Mercado": ("Flete Mercado", "mean"),
+                       "MUNICIPIOORIGEN": ("MUNICIPIOORIGEN", "first"),
+                       "MUNICIPIODESTINO": ("MUNICIPIODESTINO", "first")}
+                )
+                tabla = tabla.merge(fm_por_mes[["MES", "Flete Mercado"]], on="MES", how="left")
+            else:
+                tabla["Flete Mercado"] = None
+
+            # Agregar Nuestro Flete
+            if not fp_agg.empty:
+                fp_por_mes = fp_agg.groupby("MES", as_index=False, observed=True).agg(
+                    **{"Nuestro Flete": ("Nuestro Flete", "mean")}
+                )
+                tabla = tabla.merge(fp_por_mes[["MES", "Nuestro Flete"]], on="MES", how="left")
+            else:
+                tabla["Nuestro Flete"] = None
+
+            # Agregar SICETAC
+            if not sic_agg.empty:
+                tabla = tabla.merge(sic_agg[["MES", "SICETAC"]], on="MES", how="left")
+            else:
+                tabla["SICETAC"] = None
+
+            tabla = tabla.sort_values("MES")
+
+            # Formatear periodo para display
+            tabla["Periodo"] = tabla["MES"].apply(
+                lambda x: f"{MESES_NOMBRE.get(int(str(x)[4:6]), str(x)[4:6])} {str(x)[:4]}"
+                if pd.notna(x) and len(str(x)) >= 6 else str(x)
+            )
+
+            # Origen/destino info
+            ruta_label = ""
+            if muni_orig_sel != "Todos" and muni_dest_sel != "Todos":
+                ruta_label = f"**Ruta:** {muni_orig_sel} → {muni_dest_sel}"
+            elif muni_orig_sel != "Todos":
+                ruta_label = f"**Origen:** {muni_orig_sel}"
+            elif muni_dest_sel != "Todos":
+                ruta_label = f"**Destino:** {muni_dest_sel}"
+            if ruta_label:
+                st.markdown(ruta_label)
+
+            # Tabla con total
+            tabla_display = tabla[["Periodo", "Flete Mercado", "Nuestro Flete", "SICETAC"]].copy()
+
+            total_dict = {"Periodo": "Promedio"}
+            for col in ["Flete Mercado", "Nuestro Flete", "SICETAC"]:
+                vals = tabla_display[col].dropna()
+                total_dict[col] = vals.mean() if len(vals) > 0 else None
             tabla_con_total = pd.concat([tabla_display, pd.DataFrame([total_dict])], ignore_index=True)
 
-            format_dict = {c: "{:,.0f}" for c in ["Promedio FMercado", "Promedio FPropio", "Promedio Sicetac"]
-                           if c in tabla_con_total.columns}
+            format_dict = {c: "${:,.0f}" for c in ["Flete Mercado", "Nuestro Flete", "SICETAC"]}
 
             col_tabla, col_chart = st.columns([1, 1])
 
             with col_tabla:
                 st.dataframe(
                     tabla_con_total.style.format(format_dict, na_rep="-").apply(
-                        lambda row: ["font-weight: bold"] * len(row) if row["Periodo"] == "Total" else [""] * len(row),
+                        lambda row: ["font-weight: bold"] * len(row)
+                        if row["Periodo"] == "Promedio" else [""] * len(row),
                         axis=1,
                     ),
                     use_container_width=True, hide_index=True,
@@ -896,78 +988,72 @@ elif pagina == "💰 Comparativo FP y FM":
                 )
 
             with col_chart:
-                chart_data = tabla.groupby("MES", as_index=False).agg(
-                    **{col: (col, "mean") for col in ["Promedio FMercado", "Promedio FPropio", "Promedio Sicetac"]
-                       if col in tabla.columns and tabla[col].notna().any()}
-                ).sort_values("MES")
-
-                chart_data["Mes_Label"] = chart_data["MES"].str[4:6].astype(int).map(MESES_NOMBRE) + " " + chart_data["MES"].str[:4]
-
                 fig_comp = go.Figure()
                 series_config = [
-                    ("Promedio FMercado", COLORS["red"], "FMercado"),
-                    ("Promedio FPropio", COLORS["blue"], "FPropio"),
-                    ("Promedio Sicetac", COLORS["yellow"], "Sicetac"),
+                    ("Flete Mercado", COLORS["red"], "Flete Mercado"),
+                    ("Nuestro Flete", COLORS["blue"], "Nuestro Flete"),
+                    ("SICETAC", COLORS["yellow"], "SICETAC"),
                 ]
                 for col, color, name in series_config:
-                    if col in chart_data.columns and chart_data[col].notna().any():
+                    if col in tabla.columns and tabla[col].notna().any():
+                        df_line = tabla[tabla[col].notna()]
                         fig_comp.add_trace(go.Scatter(
-                            x=chart_data["Mes_Label"], y=chart_data[col],
+                            x=df_line["Periodo"], y=df_line[col],
                             name=name, mode="lines+markers+text",
-                            text=[f"{v/1e6:.1f} mill." if pd.notna(v) else "" for v in chart_data[col]],
-                            textposition="top center", textfont=dict(size=10),
-                            line=dict(color=color, width=2), marker=dict(size=8),
+                            text=[f"${v:,.0f}" if pd.notna(v) else "" for v in df_line[col]],
+                            textposition="top center", textfont=dict(size=9, color=color),
+                            line=dict(color=color, width=2.5), marker=dict(size=8),
                             hovertemplate=f"<b>%{{x}}</b><br>{name}: $%{{y:,.0f}}<extra></extra>",
                         ))
-                chart_layout(fig_comp, "Promedio FMercado, FPropio y Sicetac por Mes", height=450)
+                chart_layout(fig_comp, "Comparativo de Fletes por Mes", height=450)
                 st.plotly_chart(fig_comp, use_container_width=True)
 
         st.divider()
 
-        if has_fp and not df_costos.empty:
-            with st.expander("Detalle Costos Flota Propia"):
-                col_f1, col_f2 = st.columns(2)
-                with col_f1:
-                    operaciones = ["Todos"] + sorted(df_costos["Operación"].dropna().unique().tolist())
-                    op_sel = st.selectbox("Operación", operaciones, key="fp_op")
-                with col_f2:
-                    origenes_fp = ["Todos"] + sorted(df_costos["Origen"].dropna().unique().tolist())
-                    orig_fp_sel = st.selectbox("Origen FP", origenes_fp, key="fp_orig")
-
+        # ── Detalle de rutas con datos FP ────────────────────────────────────
+        if fp_has_muni and "Flete_sin_CyD" in df_costos.columns:
+            with st.expander("Detalle Nuestro Flete por Ruta"):
                 df_fp_det = df_costos.copy()
+
+                col_d1, col_d2 = st.columns(2)
+                with col_d1:
+                    operaciones = ["Todos"] + sorted(df_fp_det["Operación"].dropna().unique().tolist())
+                    op_sel = st.selectbox("Operación", operaciones, key="fp_op")
+                with col_d2:
+                    origenes_fp = ["Todos"] + sorted(df_fp_det["MUNICIPIO_ORIGEN"].dropna().unique().tolist())
+                    orig_fp_sel = st.selectbox("Municipio Origen FP", origenes_fp, key="fp_muni_orig")
+
                 if op_sel != "Todos":
                     df_fp_det = df_fp_det[df_fp_det["Operación"] == op_sel]
                 if orig_fp_sel != "Todos":
-                    df_fp_det = df_fp_det[df_fp_det["Origen"] == orig_fp_sel]
+                    df_fp_det = df_fp_det[df_fp_det["MUNICIPIO_ORIGEN"] == orig_fp_sel]
 
                 col1, col2, col3 = st.columns(3)
-                flete_prom_c = df_fp_det["Flete Calculado carrocería"].mean() if "Flete Calculado carrocería" in df_fp_det.columns else 0
-                flete_prom_b = df_fp_det["Flete Calculado Botellero"].mean() if "Flete Calculado Botellero" in df_fp_det.columns else 0
+                flete_sin_cyd_prom = df_fp_det["Flete_sin_CyD"].mean() if not df_fp_det.empty else 0
+                flete_con_cyd_prom = df_fp_det["Flete Calculado carrocería"].mean() if "Flete Calculado carrocería" in df_fp_det.columns and not df_fp_det.empty else 0
                 col1.metric("Rutas", f"{len(df_fp_det):,.0f}")
-                col2.metric("Flete Prom. Carrocería", f"${flete_prom_c:,.0f}")
-                col3.metric("Flete Prom. Botellero", f"${flete_prom_b:,.0f}")
+                col2.metric("Flete Prom. sin CyD", f"${flete_sin_cyd_prom:,.0f}")
+                col3.metric("Flete Prom. con CyD", f"${flete_con_cyd_prom:,.0f}")
 
-                if "Flete Calculado carrocería" in df_fp_det.columns and "Flete Calculado Botellero" in df_fp_det.columns:
-                    df_comp_fp = df_fp_det[["Destino", "Flete Calculado carrocería", "Flete Calculado Botellero"]].copy()
-                    df_comp_fp = df_comp_fp.dropna().groupby("Destino", as_index=False).mean(numeric_only=True)
-                    df_comp_fp = df_comp_fp.nlargest(20, "Flete Calculado carrocería")
+                # Tabla de rutas
+                if not df_fp_det.empty:
+                    df_rutas = df_fp_det.groupby(
+                        ["MUNICIPIO_ORIGEN", "MUNICIPIO_DESTINO"], as_index=False
+                    ).agg(
+                        Rutas=("Flete_sin_CyD", "count"),
+                        **{"Flete sin CyD": ("Flete_sin_CyD", "mean"),
+                           "Flete con CyD": ("Flete Calculado carrocería", "mean")},
+                    ).sort_values("Flete sin CyD", ascending=False)
 
-                    fig_comp_fp = go.Figure()
-                    fig_comp_fp.add_trace(go.Bar(
-                        y=df_comp_fp["Destino"], x=df_comp_fp["Flete Calculado carrocería"],
-                        name="Carrocería", orientation="h",
-                        marker=dict(color=COLORS["blue"], cornerradius=4),
-                        hovertemplate="<b>%{y}</b><br>Carrocería: $%{x:,.0f}<extra></extra>",
-                    ))
-                    fig_comp_fp.add_trace(go.Bar(
-                        y=df_comp_fp["Destino"], x=df_comp_fp["Flete Calculado Botellero"],
-                        name="Botellero", orientation="h",
-                        marker=dict(color=COLORS["orange"], cornerradius=4),
-                        hovertemplate="<b>%{y}</b><br>Botellero: $%{x:,.0f}<extra></extra>",
-                    ))
-                    fig_comp_fp.update_layout(barmode="group")
-                    chart_layout(fig_comp_fp, "Flete: Carrocería vs Botellero (Top 20)", height=550)
-                    st.plotly_chart(fig_comp_fp, use_container_width=True)
+                    st.dataframe(
+                        df_rutas.style.format({
+                            "Rutas": "{:,.0f}",
+                            "Flete sin CyD": "${:,.0f}",
+                            "Flete con CyD": "${:,.0f}",
+                        }),
+                        use_container_width=True, hide_index=True,
+                        height=min(500, (len(df_rutas) + 1) * 38),
+                    )
 
 
 # ══════════════════════════════════════════════════════════════════════════════
