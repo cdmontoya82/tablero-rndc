@@ -18,7 +18,7 @@ STATS_LOAD_COLS = [
     "MES", "CONFIG_VEHICULO", "COD_CONFIG_VEHICULO", "NATURALEZACARGA", "MERCANCIA",
     "DEPARTAMENTOORIGEN", "DEPARTAMENTODESTINO",
     "MUNICIPIOORIGEN", "MUNICIPIODESTINO",
-    "VIAJESTOTALES", "KILOGRAMOS", "VALORESPAGADOS",
+    "VIAJESTOTALES", "KILOGRAMOS", "VALORESPAGADOS", "VIAJESVALORCERO",
 ]
 STATS_GROUP_COLS = [
     "MES", "CONFIG_VEHICULO", "COD_CONFIG_VEHICULO", "NATURALEZACARGA", "MERCANCIA",
@@ -138,7 +138,13 @@ def load_estadisticas():
 
             _load_log.append(f"OK: {os.path.basename(f)} ({len(raw)} filas)")
 
-            raw["VIAJES_CON_VALOR"] = (raw["VALORESPAGADOS"] > 0).astype("int32")
+            # Viajes con flete = viajes totales - viajes con valor cero
+            if "VIAJESVALORCERO" in raw.columns:
+                raw["VIAJES_CON_VALOR"] = (
+                    raw["VIAJESTOTALES"] - raw["VIAJESVALORCERO"].fillna(0)
+                ).clip(lower=0).astype("int32")
+            else:
+                raw["VIAJES_CON_VALOR"] = raw["VIAJESTOTALES"]
 
             agg = raw.groupby(STATS_GROUP_COLS, as_index=False, observed=True).agg(
                 VIAJESTOTALES=("VIAJESTOTALES", "sum"),
@@ -749,7 +755,7 @@ elif pagina == "📦 Estadísticas de Carga":
 # ══════════════════════════════════════════════════════════════════════════════
 elif pagina == "💰 Comparativo FP y FM":
     st.title("Comparativo de Fletes")
-    st.caption("Flete Mercado (Estadísticas RNDC) · Nuestro Flete (sin cargue ni descargue) · Tarifa SICETAC  —  Estaca (3S3), Carga Normal")
+    st.caption("Flete Mercado (Estadísticas RNDC) · Nuestro Flete (sin cargue ni descargue) · Tarifa SICETAC")
 
     has_fm = not df_stats.empty
     has_fp = not df_costos.empty
@@ -773,24 +779,67 @@ elif pagina == "💰 Comparativo FP y FM":
                 "para poder cruzar con Estadísticas RNDC y SICETAC."
             )
 
-        # ── Pre-filtrar por estaca (3S3) y carga normal ─────────────────────
-        # Estadísticas RNDC: filtrar por config 3S3 y Carga Normal
+        # ── Filtros de configuración, mercancía y naturaleza ────────────────
+        col_fc1, col_fc2, col_fc3 = st.columns(3)
+
+        with col_fc1:
+            if has_fm:
+                configs_comp = sorted(df_stats["COD_CONFIG_VEHICULO"].dropna().unique().tolist())
+                configs_comp = [c for c in configs_comp if c.strip()]
+                # Pre-seleccionar 3S3 si existe
+                default_idx = configs_comp.index("3S3") + 1 if "3S3" in configs_comp else 0
+            else:
+                configs_comp = []
+                default_idx = 0
+            config_comp_sel = st.selectbox(
+                "Configuración", ["Todos"] + configs_comp,
+                index=default_idx, key="comp_config"
+            )
+
+        with col_fc2:
+            if has_fm:
+                mercancias_comp = sorted(df_stats["MERCANCIA"].dropna().unique().tolist())
+            else:
+                mercancias_comp = []
+            mercancia_comp_sel = st.selectbox(
+                "Mercancía", ["Todos"] + mercancias_comp, key="comp_merc"
+            )
+
+        with col_fc3:
+            if has_fm:
+                nat_comp_options = sorted(df_stats["NATURALEZACARGA"].dropna().unique().tolist())
+                # Pre-seleccionar Carga Normal si existe
+                nat_normal = [n for n in nat_comp_options if "NORMAL" in n.upper()]
+                default_nat_idx = nat_comp_options.index(nat_normal[0]) + 1 if nat_normal else 0
+            else:
+                nat_comp_options = []
+                default_nat_idx = 0
+            nat_comp_sel = st.selectbox(
+                "Naturaleza de la carga", ["Todos"] + nat_comp_options,
+                index=default_nat_idx, key="comp_nat"
+            )
+
+        # ── Aplicar filtros base a Estadísticas ─────────────────────────────
         if has_fm:
-            df_fm_base = df_stats[
-                (df_stats["COD_CONFIG_VEHICULO"] == "3S3")
-                & (df_stats["NATURALEZACARGA"].str.upper().str.contains("NORMAL", na=False))
-            ].copy()
+            df_fm_base = df_stats.copy()
+            if config_comp_sel != "Todos":
+                df_fm_base = df_fm_base[df_fm_base["COD_CONFIG_VEHICULO"] == config_comp_sel]
+            if mercancia_comp_sel != "Todos":
+                df_fm_base = df_fm_base[df_fm_base["MERCANCIA"] == mercancia_comp_sel]
+            if nat_comp_sel != "Todos":
+                df_fm_base = df_fm_base[df_fm_base["NATURALEZACARGA"] == nat_comp_sel]
         else:
             df_fm_base = pd.DataFrame()
 
-        # SICETAC: filtrar por config 3S3
+        # SICETAC: filtrar por config seleccionada
         if has_sic:
-            df_sic_base = df_sicetac[df_sicetac["CONFIGURACION"] == "3S3"].copy()
+            df_sic_base = df_sicetac.copy()
+            if config_comp_sel != "Todos":
+                df_sic_base = df_sic_base[df_sic_base["CONFIGURACION"] == config_comp_sel]
         else:
             df_sic_base = pd.DataFrame()
 
         # ── Construir listas de municipios para filtros ──────────────────────
-        # Unir municipios de todas las fuentes disponibles
         muni_orig_set = set()
         muni_dest_set = set()
 
@@ -804,14 +853,13 @@ elif pagina == "💰 Comparativo FP y FM":
             muni_orig_set.update(df_costos["MUNICIPIO_ORIGEN"].dropna().unique())
             muni_dest_set.update(df_costos["MUNICIPIO_DESTINO"].dropna().unique())
 
-        # ── Filtros ──────────────────────────────────────────────────────────
+        # ── Filtros de municipio ─────────────────────────────────────────────
         col_f1, col_f2 = st.columns(2)
         with col_f1:
             muni_orig_sel = st.selectbox(
                 "Municipio origen", ["Todos"] + sorted(muni_orig_set), key="comp_orig"
             )
         with col_f2:
-            # Filtrar destinos según origen seleccionado
             if muni_orig_sel != "Todos":
                 dest_set = set()
                 if not df_fm_base.empty:
@@ -840,6 +888,8 @@ elif pagina == "💰 Comparativo FP y FM":
         st.divider()
 
         # ── Calcular Flete Mercado (Estadísticas RNDC) ───────────────────────
+        # Flete promedio = VALORESPAGADOS / VIAJES_CON_VALOR
+        # (viajes con valor = viajes totales - viajes valor cero)
         if not df_fm_base.empty:
             df_fm = df_fm_base.copy()
             if muni_orig_sel != "Todos":
