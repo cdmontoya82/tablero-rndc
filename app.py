@@ -940,10 +940,13 @@ elif pagina == "💰 Comparativo FP y FM":
             if config_comp_sel != "Todos" and "CONFIG_FP" in df_fp_base.columns:
                 df_fp_base = df_fp_base[df_fp_base["CONFIG_FP"] == config_comp_sel]
             if nat_comp_sel != "Todos" and "NATURALEZA_FP" in df_fp_base.columns:
-                # Normalizar: "Carga Normal" en FP vs "NORMAL" en estadísticas
-                nat_fp_upper = df_fp_base["NATURALEZA_FP"].str.upper()
-                nat_sel_upper = nat_comp_sel.upper()
-                df_fp_base = df_fp_base[nat_fp_upper.str.contains(nat_sel_upper, na=False)]
+                # Normalizar: FP tiene "Normal", stats tiene "Carga Normal"
+                # Verificar si alguno contiene al otro (en cualquier dirección)
+                nat_fp_upper = df_fp_base["NATURALEZA_FP"].str.upper().str.strip()
+                nat_sel_upper = nat_comp_sel.upper().strip()
+                df_fp_base = df_fp_base[
+                    nat_fp_upper.apply(lambda x: x in nat_sel_upper or nat_sel_upper in x if pd.notna(x) else False)
+                ]
         else:
             df_fp_base = pd.DataFrame()
 
