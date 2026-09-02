@@ -281,24 +281,20 @@ def load_sicetac():
     return df
 
 
-FP_LOAD_COLS = [
-    "fecha", "Centro origen", "Centro destino",
-    "Municio origen", "Municipio destino",
-    "Configuracion", "Naturaleza",
-    "Costo sin cyd",
-]
-
-
 @st.cache_data(ttl=3600)
 def load_costos_fp():
-    """Carga archivos Costo_fp_sinCYD_*.xlsx (un archivo por mes)."""
+    """Carga archivos Costo_fp_sinCYD_*.xlsx (un archivo por mes).
+
+    Mapeo flexible de columnas: busca por coincidencia parcial e
+    insensible a mayúsculas / tildes para no depender del nombre exacto.
+    """
     data_dir = _get_data_dir()
     frames = []
 
-    # Patrón: Costo_fp_sinCYD_agosto_2026.xlsx
     patterns = [
         os.path.join(data_dir, "Costo_fp_sinCYD_*.xlsx"),
-        os.path.join(data_dir, "Costo ruta flota propia*.xlsx"),  # compatibilidad con formato anterior
+        os.path.join(data_dir, "Costo_fp_sinCYD_*.xlsx".replace("sinCYD", "sinCYD")),
+        os.path.join(data_dir, "Costo ruta flota propia*.xlsx"),
     ]
     seen = set()
     all_files = []
@@ -308,11 +304,40 @@ def load_costos_fp():
                 seen.add(f)
                 all_files.append(f)
 
+    # Mapeo: nombre interno → patrones de búsqueda en las columnas del Excel
+    COL_MAP = {
+        "fecha":       ["fecha"],
+        "centro_orig": ["centro origen"],
+        "centro_dest": ["centro destino"],
+        "cod_muni_o":  ["municio origen", "municipio origen"],
+        "cod_muni_d":  ["municipio destino"],
+        "config":      ["configuracion", "configuración"],
+        "naturaleza":  ["naturaleza"],
+        "costo":       ["costo sin cyd", "costo sin c y d"],
+    }
+
+    def _find_col(actual_cols, patterns):
+        """Encuentra la primera columna que coincide (case-insensitive) con los patrones."""
+        lower_map = {c.strip().lower(): c for c in actual_cols}
+        for pat in patterns:
+            if pat in lower_map:
+                return lower_map[pat]
+        return None
+
     for f in all_files:
         try:
-            raw = pd.read_excel(f, usecols=lambda c: c in FP_LOAD_COLS)
+            raw = pd.read_excel(f)
+            _load_log.append(f"OK costos: {os.path.basename(f)} ({len(raw)} filas, cols: {list(raw.columns[:10])})")
+
+            # Renombrar columnas al nombre interno usando el mapeo flexible
+            rename = {}
+            for internal, pats in COL_MAP.items():
+                found = _find_col(raw.columns, pats)
+                if found:
+                    rename[found] = internal
+
+            raw = raw.rename(columns=rename)
             frames.append(raw)
-            _load_log.append(f"OK costos: {os.path.basename(f)} ({len(raw)} filas)")
             del raw
         except Exception as e:
             _load_log.append(f"ERROR costos {os.path.basename(f)}: {e}")
@@ -333,42 +358,48 @@ def load_costos_fp():
         df["MES_FP"] = df["fecha"].dt.strftime("%Y%m")
 
     # Códigos DANE de municipio (enteros)
-    for col in ["Municio origen", "Municipio destino"]:
+    for col in ["cod_muni_o", "cod_muni_d"]:
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0).astype("int64")
 
     # Costo sin CyD — ya viene calculado en el nuevo formato
-    if "Costo sin cyd" in df.columns:
-        df["Flete_sin_CyD"] = pd.to_numeric(
-            df["Costo sin cyd"].astype(str).str.replace(".", "", regex=False).str.replace(",", ".", regex=False),
-            errors="coerce",
-        )
-        # Si los valores ya son numéricos (no texto con puntos), usar directamente
-        if df["Flete_sin_CyD"].isna().all() and df["Costo sin cyd"].notna().any():
-            df["Flete_sin_CyD"] = pd.to_numeric(df["Costo sin cyd"], errors="coerce")
+    if "costo" in df.columns:
+        # Intentar primero como numérico directo
+        df["Flete_sin_CyD"] = pd.to_numeric(df["costo"], errors="coerce")
+        # Si falla (viene como texto con puntos de miles), parsear formato colombiano
+        if df["Flete_sin_CyD"].isna().sum() > df["Flete_sin_CyD"].notna().sum() and df["costo"].notna().any():
+            df["Flete_sin_CyD"] = pd.to_numeric(
+                df["costo"].astype(str).str.replace(".", "", regex=False).str.replace(",", ".", regex=False),
+                errors="coerce",
+            )
 
     # Compatibilidad con formato anterior (Flete Calculado - cargue - descargue)
     if "Flete_sin_CyD" not in df.columns or df["Flete_sin_CyD"].isna().all():
-        if "Flete Calculado carrocería" in df.columns:
+        flete_col = _find_col(df.columns, ["flete calculado carrocería", "flete calculado carroceria"])
+        cargue_col = _find_col(df.columns, ["costo cargue"])
+        descargue_col = _find_col(df.columns, ["costo descargue"])
+        if flete_col:
             df["Flete_sin_CyD"] = (
-                df["Flete Calculado carrocería"]
-                - df.get("costo cargue", pd.Series(0, index=df.index)).fillna(0)
-                - df.get("Costo descargue", pd.Series(0, index=df.index)).fillna(0)
+                df[flete_col]
+                - (df[cargue_col].fillna(0) if cargue_col else 0)
+                - (df[descargue_col].fillna(0) if descargue_col else 0)
             )
 
-    # Renombrar para consistencia interna
-    rename_map = {}
-    if "Municio origen" in df.columns:
-        rename_map["Municio origen"] = "COD_MUNI_ORIG"
-    if "Municipio destino" in df.columns:
-        rename_map["Municipio destino"] = "COD_MUNI_DEST"
-    if "Configuracion" in df.columns:
-        rename_map["Configuracion"] = "CONFIG_FP"
-    if "Naturaleza" in df.columns:
-        rename_map["Naturaleza"] = "NATURALEZA_FP"
-    if rename_map:
-        df = df.rename(columns=rename_map)
+    # Renombrar a nombres internos finales
+    rename_final = {
+        "cod_muni_o": "COD_MUNI_ORIG",
+        "cod_muni_d": "COD_MUNI_DEST",
+        "config": "CONFIG_FP",
+        "naturaleza": "NATURALEZA_FP",
+    }
+    df = df.rename(columns={k: v for k, v in rename_final.items() if k in df.columns})
 
+    _load_log.append(
+        f"FP final: {len(df)} filas, cols internas: "
+        f"COD_MUNI_ORIG={'COD_MUNI_ORIG' in df.columns}, "
+        f"Flete_sin_CyD={'Flete_sin_CyD' in df.columns and df['Flete_sin_CyD'].notna().any()}, "
+        f"MES_FP={'MES_FP' in df.columns}"
+    )
     return df
 
 
