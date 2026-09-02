@@ -291,18 +291,14 @@ def load_costos_fp():
     data_dir = _get_data_dir()
     frames = []
 
-    patterns = [
-        os.path.join(data_dir, "Costo_fp_sinCYD_*.xlsx"),
-        os.path.join(data_dir, "Costo_fp_sinCYD_*.xlsx".replace("sinCYD", "sinCYD")),
-        os.path.join(data_dir, "Costo ruta flota propia*.xlsx"),
-    ]
-    seen = set()
-    all_files = []
-    for pat in patterns:
-        for f in sorted(glob.glob(pat)):
-            if f not in seen:
-                seen.add(f)
-                all_files.append(f)
+    # Buscar archivos nuevos primero; si existen, NO cargar el formato viejo
+    new_files = sorted(glob.glob(os.path.join(data_dir, "Costo_fp_sinCYD_*.xlsx")))
+    if new_files:
+        all_files = new_files
+        _load_log.append(f"FP: usando {len(new_files)} archivos formato nuevo")
+    else:
+        all_files = sorted(glob.glob(os.path.join(data_dir, "Costo ruta flota propia*.xlsx")))
+        _load_log.append(f"FP: usando {len(all_files)} archivos formato anterior")
 
     # Mapeo: nombre interno → patrones de búsqueda en las columnas del Excel
     COL_MAP = {
@@ -1093,17 +1089,17 @@ elif pagina == "💰 Comparativo FP y FM":
             if not fm_agg.empty:
                 tabla = tabla.merge(fm_agg[["MES", "Flete Mercado"]], on="MES", how="left")
             else:
-                tabla["Flete Mercado"] = None
+                tabla["Flete Mercado"] = float("nan")
 
             if not fp_agg.empty:
                 tabla = tabla.merge(fp_agg[["MES", "Nuestro Flete"]], on="MES", how="left")
             else:
-                tabla["Nuestro Flete"] = None
+                tabla["Nuestro Flete"] = float("nan")
 
             if not sic_agg.empty:
                 tabla = tabla.merge(sic_agg[["MES", "SICETAC"]], on="MES", how="left")
             else:
-                tabla["SICETAC"] = None
+                tabla["SICETAC"] = float("nan")
 
             tabla = tabla.sort_values("MES")
 
