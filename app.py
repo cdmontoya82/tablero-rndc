@@ -155,6 +155,11 @@ def load_estadisticas():
                 VALORESPAGADOS=("VALORESPAGADOS", "sum"),
                 VIAJES_CON_VALOR=("VIAJES_CON_VALOR", "sum"),
             )
+            # Convertir a category lo antes posible para reducir memoria
+            _to_category(agg, STATS_GROUP_COLS)
+            for nc in ["VIAJESTOTALES", "KILOGRAMOS", "VIAJES_CON_VALOR"]:
+                if nc in agg.columns:
+                    agg[nc] = pd.to_numeric(agg[nc], downcast="integer")
             agg_frames.append(agg)
             del raw
             gc.collect()
@@ -170,12 +175,8 @@ def load_estadisticas():
     del agg_frames
     gc.collect()
 
-    df = df.groupby(STATS_GROUP_COLS, as_index=False, observed=True).agg(
-        VIAJESTOTALES=("VIAJESTOTALES", "sum"),
-        KILOGRAMOS=("KILOGRAMOS", "sum"),
-        VALORESPAGADOS=("VALORESPAGADOS", "sum"),
-        VIAJES_CON_VALOR=("VIAJES_CON_VALOR", "sum"),
-    )
+    # Ya no necesita re-agrupar porque cada archivo tiene un MES distinto
+    # df = df.groupby(...)  ← se omite para ahorrar memoria
 
     df["MES"] = df["MES"].astype(str)
     df["AÑO"] = df["MES"].str[:4]
@@ -251,6 +252,8 @@ def load_sicetac():
                 DISTANCIA_SUMA=("DISTANCIA", "sum"),
                 CONTEO=("VALOR", "count"),
             )
+            # Convertir a category lo antes posible
+            _to_category(agg, ["PERIODO", "CONFIGURACION", "NOMORIGEN", "NOMDESTINO"])
             agg_frames.append(agg)
             del raw
             gc.collect()
@@ -839,32 +842,31 @@ elif pagina == "💰 Comparativo FP y FM":
     if not has_fm and not has_fp and not has_sic:
         st.warning("No se encontraron datos para la comparación.")
     else:
-        # ── Construir mapeo DANE → nombre de municipio ──────────────────────
-        # Usa los datos de estadísticas y SICETAC para crear un diccionario
+        # ── Construir mapeo DANE → nombre de municipio (vectorizado) ────────
         dane_to_name_orig = {}
         dane_to_name_dest = {}
         if has_fm:
-            for _, row in df_stats[["CODMUNICIPIOORIGEN", "MUNICIPIOORIGEN"]].drop_duplicates().iterrows():
-                code = int(row["CODMUNICIPIOORIGEN"]) if pd.notna(row["CODMUNICIPIOORIGEN"]) else 0
-                name = row["MUNICIPIOORIGEN"]
-                if code > 0 and pd.notna(name):
-                    dane_to_name_orig[code] = str(name)
-            for _, row in df_stats[["CODMUNICIPIODESTINO", "MUNICIPIODESTINO"]].drop_duplicates().iterrows():
-                code = int(row["CODMUNICIPIODESTINO"]) if pd.notna(row["CODMUNICIPIODESTINO"]) else 0
-                name = row["MUNICIPIODESTINO"]
-                if code > 0 and pd.notna(name):
-                    dane_to_name_dest[code] = str(name)
+            _o = df_stats[["CODMUNICIPIOORIGEN", "MUNICIPIOORIGEN"]].drop_duplicates()
+            _o = _o.dropna(subset=["CODMUNICIPIOORIGEN", "MUNICIPIOORIGEN"])
+            _o = _o[_o["CODMUNICIPIOORIGEN"] > 0]
+            dane_to_name_orig = dict(zip(_o["CODMUNICIPIOORIGEN"].astype(int), _o["MUNICIPIOORIGEN"].astype(str)))
+            _d = df_stats[["CODMUNICIPIODESTINO", "MUNICIPIODESTINO"]].drop_duplicates()
+            _d = _d.dropna(subset=["CODMUNICIPIODESTINO", "MUNICIPIODESTINO"])
+            _d = _d[_d["CODMUNICIPIODESTINO"] > 0]
+            dane_to_name_dest = dict(zip(_d["CODMUNICIPIODESTINO"].astype(int), _d["MUNICIPIODESTINO"].astype(str)))
+            del _o, _d
         if has_sic:
-            for _, row in df_sicetac[["ORIGEN", "NOMORIGEN"]].drop_duplicates().iterrows():
-                code = int(row["ORIGEN"]) if pd.notna(row["ORIGEN"]) else 0
-                name = row["NOMORIGEN"]
-                if code > 0 and pd.notna(name) and code not in dane_to_name_orig:
-                    dane_to_name_orig[code] = str(name)
-            for _, row in df_sicetac[["DESTINO", "NOMDESTINO"]].drop_duplicates().iterrows():
-                code = int(row["DESTINO"]) if pd.notna(row["DESTINO"]) else 0
-                name = row["NOMDESTINO"]
-                if code > 0 and pd.notna(name) and code not in dane_to_name_dest:
-                    dane_to_name_dest[code] = str(name)
+            _o = df_sicetac[["ORIGEN", "NOMORIGEN"]].drop_duplicates()
+            _o = _o.dropna(subset=["ORIGEN", "NOMORIGEN"])
+            _o = _o[_o["ORIGEN"] > 0]
+            for code, name in zip(_o["ORIGEN"].astype(int), _o["NOMORIGEN"].astype(str)):
+                dane_to_name_orig.setdefault(code, name)
+            _d = df_sicetac[["DESTINO", "NOMDESTINO"]].drop_duplicates()
+            _d = _d.dropna(subset=["DESTINO", "NOMDESTINO"])
+            _d = _d[_d["DESTINO"] > 0]
+            for code, name in zip(_d["DESTINO"].astype(int), _d["NOMDESTINO"].astype(str)):
+                dane_to_name_dest.setdefault(code, name)
+            del _o, _d
 
         # Combinar en un solo diccionario code → name
         dane_to_name = {**dane_to_name_orig, **dane_to_name_dest}
