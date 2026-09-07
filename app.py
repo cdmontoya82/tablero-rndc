@@ -848,22 +848,24 @@ elif pagina == "💰 Comparativo FP y FM":
         if has_fm:
             _o = df_stats[["CODMUNICIPIOORIGEN", "MUNICIPIOORIGEN"]].drop_duplicates()
             _o = _o.dropna(subset=["CODMUNICIPIOORIGEN", "MUNICIPIOORIGEN"])
-            _o = _o[_o["CODMUNICIPIOORIGEN"] > 0]
+            _o_codes = pd.to_numeric(_o["CODMUNICIPIOORIGEN"], errors="coerce").fillna(0)
+            _o = _o[_o_codes > 0]
             dane_to_name_orig = dict(zip(_o["CODMUNICIPIOORIGEN"].astype(int), _o["MUNICIPIOORIGEN"].astype(str)))
             _d = df_stats[["CODMUNICIPIODESTINO", "MUNICIPIODESTINO"]].drop_duplicates()
             _d = _d.dropna(subset=["CODMUNICIPIODESTINO", "MUNICIPIODESTINO"])
-            _d = _d[_d["CODMUNICIPIODESTINO"] > 0]
+            _d_codes = pd.to_numeric(_d["CODMUNICIPIODESTINO"], errors="coerce").fillna(0)
+            _d = _d[_d_codes > 0]
             dane_to_name_dest = dict(zip(_d["CODMUNICIPIODESTINO"].astype(int), _d["MUNICIPIODESTINO"].astype(str)))
             del _o, _d
         if has_sic:
             _o = df_sicetac[["ORIGEN", "NOMORIGEN"]].drop_duplicates()
             _o = _o.dropna(subset=["ORIGEN", "NOMORIGEN"])
-            _o = _o[_o["ORIGEN"] > 0]
+            _o = _o[pd.to_numeric(_o["ORIGEN"], errors="coerce").fillna(0) > 0]
             for code, name in zip(_o["ORIGEN"].astype(int), _o["NOMORIGEN"].astype(str)):
                 dane_to_name_orig.setdefault(code, name)
             _d = df_sicetac[["DESTINO", "NOMDESTINO"]].drop_duplicates()
             _d = _d.dropna(subset=["DESTINO", "NOMDESTINO"])
-            _d = _d[_d["DESTINO"] > 0]
+            _d = _d[pd.to_numeric(_d["DESTINO"], errors="coerce").fillna(0) > 0]
             for code, name in zip(_d["DESTINO"].astype(int), _d["NOMDESTINO"].astype(str)):
                 dane_to_name_dest.setdefault(code, name)
             del _o, _d
