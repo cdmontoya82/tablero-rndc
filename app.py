@@ -11,6 +11,7 @@ import plotly.graph_objects as go
 import glob
 import os
 import gc
+import traceback
 
 # ─── Columnas de pre-agregación unificada ────────────────────────────────────
 # Un solo dataset que sirve para las 4 páginas
@@ -479,7 +480,6 @@ EDINSA_NAME = "EMPRESA DE DISTRIBUCIONES INDUSTRIALES S.A."
 EDINSA_COLOR = COLORS["orange"]
 OTHER_COLOR = COLORS["blue"]
 
-
 # ══════════════════════════════════════════════════════════════════════════════
 # PÁGINA 1: RANKING EMPRESA
 # ══════════════════════════════════════════════════════════════════════════════
@@ -555,7 +555,7 @@ if pagina == "📊 Ranking Empresa":
                     lambda row: ["font-weight: bold"] * len(row) if row["Mes"] == "Total" else [""] * len(row),
                     axis=1,
                 ),
-                use_container_width=True, hide_index=True,
+                width="stretch", hide_index=True,
                 height=min(400, (len(df_participacion) + 1) * 38),
             )
 
@@ -581,7 +581,7 @@ if pagina == "📊 Ranking Empresa":
                 range=[0, max(df_part_chart["% participación tons EDINSA"].max() * 2, 5)],
             ))
             chart_layout(fig_part, "Toneladas EDINSA y % Participación por Mes", height=380)
-            st.plotly_chart(fig_part, use_container_width=True)
+            st.plotly_chart(fig_part, width="stretch")
 
         st.divider()
 
@@ -599,7 +599,7 @@ if pagina == "📊 Ranking Empresa":
             hovertemplate="<b>%{y}</b><br>Toneladas: %{x:,.0f}<extra></extra>",
         ))
         chart_layout(fig_bar, f"Top {top_n} Empresas por Toneladas", height=max(400, top_n * 28))
-        st.plotly_chart(fig_bar, use_container_width=True)
+        st.plotly_chart(fig_bar, width="stretch")
 
         col_a, col_b = st.columns(2)
         with col_a:
@@ -618,7 +618,7 @@ if pagina == "📊 Ranking Empresa":
                 df_tabla.style.apply(highlight_edinsa, axis=1).format({
                     "Manifiestos": "{:,.0f}", "Toneladas": "{:,.0f}", "% Participación": "{:.2f} %",
                 }),
-                use_container_width=True, height=500,
+                width="stretch", height=500,
             )
 
         with col_b:
@@ -646,7 +646,7 @@ if pagina == "📊 Ranking Empresa":
                     hovertemplate="<b>EDINSA</b><br>Manifiestos: %{x:,.0f}<br>Toneladas: %{y:,.0f}<extra></extra>",
                 ))
             chart_layout(fig_scatter, "Relación Manifiestos vs Toneladas", height=500)
-            st.plotly_chart(fig_scatter, use_container_width=True)
+            st.plotly_chart(fig_scatter, width="stretch")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -760,7 +760,7 @@ elif pagina == "📦 Estadísticas de Carga":
             chart_layout(fig_flete, "Flete promedio", height=420)
             fig_flete.update_layout(xaxis=dict(categoryorder="array",
                                                 categoryarray=list(MESES_NOMBRE.values())))
-            st.plotly_chart(fig_flete, use_container_width=True)
+            st.plotly_chart(fig_flete, width="stretch")
 
         # ── Gráfico 2: Cantidad de viajes por mes, líneas por año ────────────
         df_viajes_trend = df_f.groupby(["AÑO", "MES_NUM"], as_index=False, observed=True).agg(
@@ -785,7 +785,7 @@ elif pagina == "📦 Estadísticas de Carga":
             chart_layout(fig_viajes, "Cantidad de viajes", height=420)
             fig_viajes.update_layout(xaxis=dict(categoryorder="array",
                                                  categoryarray=list(MESES_NOMBRE.values())))
-            st.plotly_chart(fig_viajes, use_container_width=True)
+            st.plotly_chart(fig_viajes, width="stretch")
 
         st.divider()
 
@@ -800,7 +800,7 @@ elif pagina == "📦 Estadísticas de Carga":
             fig_merc.update_traces(marker=dict(cornerradius=4),
                                     hovertemplate="<b>%{y}</b><br>Toneladas: %{x:,.0f}<extra></extra>")
             chart_layout(fig_merc, "Toneladas totales por Mercancía", height=380)
-            st.plotly_chart(fig_merc, use_container_width=True)
+            st.plotly_chart(fig_merc, width="stretch")
 
         with col_b:
             df_nat = df_f.groupby("NATURALEZACARGA", as_index=False, observed=True)["VIAJESTOTALES"].sum()
@@ -811,7 +811,7 @@ elif pagina == "📦 Estadísticas de Carga":
                                   hovertemplate="<b>%{label}</b><br>Viajes: %{value:,.0f}<br>%{percent}<extra></extra>",
                                   marker=dict(line=dict(color=SURFACE, width=2)))
             chart_layout(fig_nat, "Naturaleza de la carga", height=380)
-            st.plotly_chart(fig_nat, use_container_width=True)
+            st.plotly_chart(fig_nat, width="stretch")
 
         with col_c:
             df_cfg = df_f.groupby("COD_CONFIG_VEHICULO", as_index=False, observed=True)["VIAJESTOTALES"].sum()
@@ -822,7 +822,7 @@ elif pagina == "📦 Estadísticas de Carga":
                                   hovertemplate="<b>%{label}</b><br>Viajes: %{value:,.0f}<br>%{percent}<extra></extra>",
                                   marker=dict(line=dict(color=SURFACE, width=2)))
             chart_layout(fig_cfg, "Configuración vehículo", height=380)
-            st.plotly_chart(fig_cfg, use_container_width=True)
+            st.plotly_chart(fig_cfg, width="stretch")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1137,7 +1137,7 @@ elif pagina == "💰 Comparativo FP y FM":
                         if row["Periodo"] == "Promedio" else [""] * len(row),
                         axis=1,
                     ),
-                    use_container_width=True, hide_index=True,
+                    width="stretch", hide_index=True,
                     height=min(500, (len(tabla_con_total) + 1) * 38),
                 )
 
@@ -1160,7 +1160,7 @@ elif pagina == "💰 Comparativo FP y FM":
                             hovertemplate=f"<b>%{{x}}</b><br>{name}: $%{{y:,.0f}}<extra></extra>",
                         ))
                 chart_layout(fig_comp, "Comparativo de Fletes por Mes", height=450)
-                st.plotly_chart(fig_comp, use_container_width=True)
+                st.plotly_chart(fig_comp, width="stretch")
 
         st.divider()
 
@@ -1203,7 +1203,7 @@ elif pagina == "💰 Comparativo FP y FM":
                             "Rutas": "{:,.0f}",
                             "Flete sin CyD": "${:,.0f}",
                         }),
-                        use_container_width=True, hide_index=True,
+                        width="stretch", hide_index=True,
                         height=min(500, (len(df_rutas) + 1) * 38),
                     )
 
@@ -1251,7 +1251,7 @@ elif pagina == "📋 Tabla Consolidada":
                 "Viajes": "{:,.0f}", "Viajes con Valor": "{:,.0f}",
                 "Flete Pagado": "${:,.0f}", "Toneladas": "{:,.0f}",
             }),
-            use_container_width=True, height=400, hide_index=True,
+            width="stretch", height=400, hide_index=True,
         )
 
         fig_consol = go.Figure()
@@ -1271,7 +1271,7 @@ elif pagina == "📋 Tabla Consolidada":
             tickfont=dict(color=COLORS["orange"]),
         ))
         chart_layout(fig_consol, "Viajes y Toneladas por Mes", height=420)
-        st.plotly_chart(fig_consol, use_container_width=True)
+        st.plotly_chart(fig_consol, width="stretch")
 
 
 # ─── Footer ──────────────────────────────────────────────────────────────────
