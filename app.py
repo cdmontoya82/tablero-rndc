@@ -1197,9 +1197,46 @@ elif pagina == "💰 Comparativo FP y FM":
         "Flete Mercado (Estadisticas RNDC) - Nuestro Flete (sin cargue ni descargue) - Tarifa SICETAC"
     )
 
-    has_fm = not df_muni.empty
-    has_fp = not df_costos.empty and "COD_MUNI_ORIG" in df_costos.columns
-    has_sic = not df_sicetac.empty
+    # Aplicar filtro global de ano/mes a los 3 datasets de pagina 3
+    # -- MUNI (flete mercado) --
+    if not df_muni.empty and ano_sel:
+        _muni_mask = df_muni["ANO"].isin(ano_sel)
+        if mes_sel:
+            _muni_mask = _muni_mask & df_muni["MES_NUM"].isin(mes_sel)
+        df_muni_filt = df_muni[_muni_mask]
+    else:
+        df_muni_filt = df_muni
+
+    # -- Construir set de periodos permitidos (formato YYYYMM) --
+    _periodos_ok = set()
+    if ano_sel and mes_sel:
+        for a in ano_sel:
+            for m in mes_sel:
+                _periodos_ok.add("{}{}".format(str(a), str(int(m)).zfill(2)))
+
+    # -- SICETAC --
+    if not df_sicetac.empty and _periodos_ok:
+        df_sicetac_filt = df_sicetac[
+            df_sicetac["PERIODO"].astype(str).isin(_periodos_ok)
+        ]
+    else:
+        df_sicetac_filt = df_sicetac
+
+    # -- FP (costos flota propia) --
+    if (
+        not df_costos.empty
+        and "MES_FP" in df_costos.columns
+        and _periodos_ok
+    ):
+        df_costos_filt = df_costos[
+            df_costos["MES_FP"].astype(str).isin(_periodos_ok)
+        ]
+    else:
+        df_costos_filt = df_costos
+
+    has_fm = not df_muni_filt.empty
+    has_fp = not df_costos_filt.empty and "COD_MUNI_ORIG" in df_costos_filt.columns
+    has_sic = not df_sicetac_filt.empty
 
     if not has_fm and not has_fp and not has_sic:
         st.warning("No se encontraron datos para la comparacion.")
@@ -1315,7 +1352,7 @@ elif pagina == "💰 Comparativo FP y FM":
 
         # -- Aplicar filtros base --
         if has_fm:
-            df_fm_base = df_muni.copy()
+            df_fm_base = df_muni_filt.copy()
             if config_comp_sel != "Todos":
                 df_fm_base = df_fm_base[
                     df_fm_base["COD_CONFIG_VEHICULO"] == config_comp_sel
@@ -1328,7 +1365,7 @@ elif pagina == "💰 Comparativo FP y FM":
             df_fm_base = pd.DataFrame()
 
         if has_sic:
-            df_sic_base = df_sicetac.copy()
+            df_sic_base = df_sicetac_filt.copy()
             if config_comp_sel != "Todos":
                 df_sic_base = df_sic_base[
                     df_sic_base["CONFIGURACION"] == config_comp_sel
@@ -1337,7 +1374,7 @@ elif pagina == "💰 Comparativo FP y FM":
             df_sic_base = pd.DataFrame()
 
         if has_fp:
-            df_fp_base = df_costos.copy()
+            df_fp_base = df_costos_filt.copy()
             if (
                 config_comp_sel != "Todos"
                 and "CONFIG_FP" in df_fp_base.columns
@@ -1671,12 +1708,12 @@ elif pagina == "💰 Comparativo FP y FM":
         st.divider()
 
         # -- Detalle de rutas con datos FP --
-        if has_fp and "Flete_sin_CyD" in df_costos.columns:
+        if has_fp and "Flete_sin_CyD" in df_costos_filt.columns:
             with st.expander("Detalle Nuestro Flete por Ruta"):
                 df_fp_det = (
                     df_fp_base.copy()
                     if not df_fp_base.empty
-                    else df_costos.copy()
+                    else df_costos_filt.copy()
                 )
 
                 df_fp_det["Origen"] = df_fp_det["COD_MUNI_ORIG"].map(
