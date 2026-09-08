@@ -1,8 +1,6 @@
-"""
-Tablero RNDC - Edinsa
-Dashboard interactivo para estadísticas de transporte RNDC
-(Versión optimizada para Streamlit Cloud — pre-agregación de datos)
-"""
+# Tablero RNDC - Edinsa
+# Dashboard interactivo para estadisticas de transporte RNDC
+# Version optimizada para Streamlit Cloud (pre-agregacion en 3 niveles)
 
 import streamlit as st
 import pandas as pd
@@ -11,28 +9,27 @@ import plotly.graph_objects as go
 import glob
 import os
 import gc
-import traceback
 
-# ─── Columnas de pre-agregación unificada ────────────────────────────────────
-# Un solo dataset que sirve para las 4 páginas
-STATS_LOAD_COLS = [
-    "MES", "CONFIG_VEHICULO", "COD_CONFIG_VEHICULO", "NATURALEZACARGA", "MERCANCIA",
+# --- Columnas de pre-agregacion ---
+# CORE: para paginas 2 y 4 (sin municipio ni mercancia)
+CORE_AGG_COLS = [
+    "MES", "CONFIG_VEHICULO", "COD_CONFIG_VEHICULO", "NATURALEZACARGA",
     "DEPARTAMENTOORIGEN", "DEPARTAMENTODESTINO",
-    "CODMUNICIPIOORIGEN", "MUNICIPIOORIGEN",
-    "CODMUNICIPIODESTINO", "MUNICIPIODESTINO",
-    "VIAJESTOTALES", "KILOGRAMOS", "VALORESPAGADOS", "VIAJESVALORCERO",
 ]
-STATS_GROUP_COLS = [
-    "MES", "CONFIG_VEHICULO", "COD_CONFIG_VEHICULO", "NATURALEZACARGA", "MERCANCIA",
-    "DEPARTAMENTOORIGEN", "DEPARTAMENTODESTINO",
+# MERC: solo para el grafico de mercancia en pagina 2
+MERC_AGG_COLS = ["MES", "MERCANCIA"]
+# MUNI: para pagina 3 (comparativo)
+MUNI_AGG_COLS = [
+    "MES", "COD_CONFIG_VEHICULO", "NATURALEZACARGA",
     "CODMUNICIPIOORIGEN", "MUNICIPIOORIGEN",
     "CODMUNICIPIODESTINO", "MUNICIPIODESTINO",
 ]
 SICETAC_COLUMNS = [
-    "PERIODO", "ORIGEN", "NOMORIGEN", "DESTINO", "NOMDESTINO", "CONFIGURACION", "VALOR", "DISTANCIA",
+    "PERIODO", "ORIGEN", "NOMORIGEN", "DESTINO", "NOMDESTINO",
+    "CONFIGURACION", "VALOR", "DISTANCIA",
 ]
 
-# ─── Configuración de página ─────────────────────────────────────────────────
+# --- Configuracion de pagina ---
 st.set_page_config(
     page_title="Tablero RNDC - Edinsa",
     page_icon="🚛",
@@ -40,7 +37,7 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-# ─── Paleta de colores ───────────────────────────────────────────────────────
+# --- Paleta de colores ---
 COLORS = {
     "blue": "#2a78d6",
     "orange": "#eb6834",
@@ -60,40 +57,35 @@ GRIDLINE = "#e1e0d9"
 BASELINE = "#c3c2b7"
 
 MESES_NOMBRE = {
-    1: "enero", 2: "febrero", 3: "marzo", 4: "abril", 5: "mayo", 6: "junio",
-    7: "julio", 8: "agosto", 9: "septiembre", 10: "octubre", 11: "noviembre", 12: "diciembre",
+    1: "enero", 2: "febrero", 3: "marzo", 4: "abril",
+    5: "mayo", 6: "junio", 7: "julio", 8: "agosto",
+    9: "septiembre", 10: "octubre", 11: "noviembre", 12: "diciembre",
 }
-MESES_CORTO = {1: "Ene", 2: "Feb", 3: "Mar", 4: "Abr", 5: "May", 6: "Jun",
-               7: "Jul", 8: "Ago", 9: "Sep", 10: "Oct", 11: "Nov", 12: "Dic"}
+MESES_CORTO = {
+    1: "Ene", 2: "Feb", 3: "Mar", 4: "Abr", 5: "May", 6: "Jun",
+    7: "Jul", 8: "Ago", 9: "Sep", 10: "Oct", 11: "Nov", 12: "Dic",
+}
 
-# Colores para años en gráficos multi-año
-YEAR_COLORS = {"2024": COLORS["blue"], "2025": "#1a1a6e", "2026": COLORS["orange"]}
+YEAR_COLORS = {
+    "2024": COLORS["blue"],
+    "2025": "#1a1a6e",
+    "2026": COLORS["orange"],
+}
 
-# ─── Estilos CSS ─────────────────────────────────────────────────────────────
-st.markdown("""
-<style>
-    [data-testid="stMetric"] {
-        background: #fcfcfb;
-        border: 1px solid #e1e0d9;
-        border-radius: 8px;
-        padding: 12px 16px;
-    }
-    [data-testid="stMetricValue"] {
-        font-size: 1.8rem;
-        font-weight: 600;
-        color: #0b0b0b;
-    }
-    [data-testid="stMetricLabel"] {
-        font-size: 0.85rem;
-        color: #52514e;
-    }
-    .block-container { padding-top: 1rem; }
-    h1, h2, h3 { font-family: system-ui, -apple-system, "Segoe UI", sans-serif; }
-</style>
-""", unsafe_allow_html=True)
+# --- Estilos CSS ---
+st.markdown(
+    "<style>"
+    '[data-testid="stMetric"]{background:#fcfcfb;border:1px solid #e1e0d9;border-radius:8px;padding:12px 16px}'
+    '[data-testid="stMetricValue"]{font-size:1.8rem;font-weight:600;color:#0b0b0b}'
+    '[data-testid="stMetricLabel"]{font-size:0.85rem;color:#52514e}'
+    ".block-container{padding-top:1rem}"
+    "h1,h2,h3{font-family:system-ui,-apple-system,'Segoe UI',sans-serif}"
+    "</style>",
+    unsafe_allow_html=True,
+)
 
 
-# ─── Funciones auxiliares ────────────────────────────────────────────────────
+# --- Funciones auxiliares ---
 _load_log = []
 
 
@@ -115,79 +107,156 @@ def _to_category(df, cols):
     return df
 
 
-# ─── Carga de datos ──────────────────────────────────────────────────────────
+# --- Carga de datos (3 niveles para Estadisticas) ---
 
 @st.cache_data(ttl=3600)
 def load_estadisticas():
-    """Carga EstadisticasRNDC con PRE-AGREGACIÓN unificada.
-
-    Un solo dataset con municipio + departamento + config que sirve para
-    páginas 2 (Estadísticas), 3 (Comparativo) y 4 (Tabla Consolidada).
-    """
+    # Carga con pre-agregacion en 3 niveles para reducir memoria:
+    # CORE (paginas 2, 4), MERC (grafico mercancia), MUNI (pagina 3)
     data_dir = _get_data_dir()
-    agg_frames = []
+    all_files = sorted(glob.glob(os.path.join(data_dir, "EstadisticasRNDC_*.parquet")))
+    all_files += sorted(glob.glob(os.path.join(data_dir, "EstadisticasRNDC_*.xlsx")))
 
-    all_files = (
-        sorted(glob.glob(os.path.join(data_dir, "EstadisticasRNDC_*.parquet")))
-        + sorted(glob.glob(os.path.join(data_dir, "EstadisticasRNDC_*.xlsx")))
-    )
+    ALL_COLS = [
+        "MES", "CONFIG_VEHICULO", "COD_CONFIG_VEHICULO", "NATURALEZACARGA",
+        "MERCANCIA", "DEPARTAMENTOORIGEN", "DEPARTAMENTODESTINO",
+        "CODMUNICIPIOORIGEN", "MUNICIPIOORIGEN",
+        "CODMUNICIPIODESTINO", "MUNICIPIODESTINO",
+        "VIAJESTOTALES", "KILOGRAMOS", "VALORESPAGADOS", "VIAJESVALORCERO",
+    ]
 
-    for f in all_files:
+    core_parts = []
+    merc_parts = []
+    muni_acc = None
+
+    for idx, f in enumerate(all_files):
         try:
             if f.endswith(".parquet"):
-                raw = pd.read_parquet(f, columns=STATS_LOAD_COLS)
+                raw = pd.read_parquet(f, columns=ALL_COLS)
             else:
-                raw = pd.read_excel(f, usecols=lambda c: c in STATS_LOAD_COLS)
+                raw = pd.read_excel(f, usecols=lambda c: c in ALL_COLS)
 
-            _load_log.append(f"OK: {os.path.basename(f)} ({len(raw)} filas)")
+            _load_log.append(
+                "OK: {} ({} filas)".format(os.path.basename(f), len(raw))
+            )
 
-            # Viajes con flete = viajes totales - viajes con valor cero
             if "VIAJESVALORCERO" in raw.columns:
                 raw["VIAJES_CON_VALOR"] = (
                     raw["VIAJESTOTALES"] - raw["VIAJESVALORCERO"].fillna(0)
                 ).clip(lower=0).astype("int32")
             else:
                 raw["VIAJES_CON_VALOR"] = raw["VIAJESTOTALES"]
+            raw["TONELADAS"] = raw["KILOGRAMOS"] / 1000
 
-            agg = raw.groupby(STATS_GROUP_COLS, as_index=False, observed=True).agg(
+            # CORE agg
+            ac = raw.groupby(CORE_AGG_COLS, as_index=False, observed=True).agg(
                 VIAJESTOTALES=("VIAJESTOTALES", "sum"),
                 KILOGRAMOS=("KILOGRAMOS", "sum"),
                 VALORESPAGADOS=("VALORESPAGADOS", "sum"),
                 VIAJES_CON_VALOR=("VIAJES_CON_VALOR", "sum"),
+                TONELADAS=("TONELADAS", "sum"),
             )
-            # Convertir a category lo antes posible para reducir memoria
-            _to_category(agg, STATS_GROUP_COLS)
+            _to_category(ac, CORE_AGG_COLS)
             for nc in ["VIAJESTOTALES", "KILOGRAMOS", "VIAJES_CON_VALOR"]:
-                if nc in agg.columns:
-                    agg[nc] = pd.to_numeric(agg[nc], downcast="integer")
-            agg_frames.append(agg)
-            del raw
+                if nc in ac.columns:
+                    ac[nc] = pd.to_numeric(ac[nc], downcast="integer")
+            core_parts.append(ac)
+
+            # MERC agg
+            if "MERCANCIA" in raw.columns:
+                am = raw.groupby(MERC_AGG_COLS, as_index=False, observed=True).agg(
+                    TONELADAS=("TONELADAS", "sum"),
+                    VIAJESTOTALES=("VIAJESTOTALES", "sum"),
+                )
+                _to_category(am, MERC_AGG_COLS)
+                merc_parts.append(am)
+
+            # MUNI agg (re-agregar cada 2 archivos para limitar pico de memoria)
+            mu = raw.groupby(MUNI_AGG_COLS, as_index=False, observed=True).agg(
+                VIAJESTOTALES=("VIAJESTOTALES", "sum"),
+                VALORESPAGADOS=("VALORESPAGADOS", "sum"),
+                VIAJES_CON_VALOR=("VIAJES_CON_VALOR", "sum"),
+            )
+            _to_category(mu, MUNI_AGG_COLS)
+
+            if muni_acc is None:
+                muni_acc = mu
+            else:
+                muni_acc = pd.concat([muni_acc, mu], ignore_index=True)
+                if (idx + 1) % 2 == 0:
+                    muni_acc = muni_acc.groupby(
+                        MUNI_AGG_COLS, as_index=False, observed=True,
+                    ).agg(
+                        VIAJESTOTALES=("VIAJESTOTALES", "sum"),
+                        VALORESPAGADOS=("VALORESPAGADOS", "sum"),
+                        VIAJES_CON_VALOR=("VIAJES_CON_VALOR", "sum"),
+                    )
+                    _to_category(muni_acc, MUNI_AGG_COLS)
+
+            del raw, mu
             gc.collect()
 
         except Exception as e:
-            _load_log.append(f"ERROR {os.path.basename(f)}: {e}")
+            _load_log.append(
+                "ERROR {}: {}".format(os.path.basename(f), e)
+            )
 
-    if not agg_frames:
+    # Ensamblar DataFrames finales
+    if not core_parts:
         _load_log.append("SIN DATOS: No se encontraron archivos EstadisticasRNDC")
-        return pd.DataFrame()
+        return pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
 
-    df = pd.concat(agg_frames, ignore_index=True)
-    del agg_frames
+    df_core = pd.concat(core_parts, ignore_index=True)
+    del core_parts
     gc.collect()
+    _to_category(df_core, CORE_AGG_COLS)
 
-    # Ya no necesita re-agrupar porque cada archivo tiene un MES distinto
-    # df = df.groupby(...)  ← se omite para ahorrar memoria
+    df_merc = pd.DataFrame()
+    if merc_parts:
+        df_merc = pd.concat(merc_parts, ignore_index=True)
+        del merc_parts
+        gc.collect()
+        _to_category(df_merc, MERC_AGG_COLS)
 
-    df["MES"] = df["MES"].astype(str)
-    df["AÑO"] = df["MES"].str[:4]
-    df["MES_NUM"] = df["MES"].str[4:6].astype(int)
-    df["PERIODO"] = pd.to_datetime(df["MES"], format="%Y%m")
-    df["MES_NOMBRE"] = df["PERIODO"].dt.strftime("%b %Y")
-    df["TONELADAS"] = df["KILOGRAMOS"] / 1000
+    if muni_acc is not None:
+        muni_acc = muni_acc.groupby(
+            MUNI_AGG_COLS, as_index=False, observed=True,
+        ).agg(
+            VIAJESTOTALES=("VIAJESTOTALES", "sum"),
+            VALORESPAGADOS=("VALORESPAGADOS", "sum"),
+            VIAJES_CON_VALOR=("VIAJES_CON_VALOR", "sum"),
+        )
+        _to_category(muni_acc, MUNI_AGG_COLS)
+    else:
+        muni_acc = pd.DataFrame()
 
-    _to_category(df, STATS_GROUP_COLS + ["AÑO", "MES_NOMBRE"])
-    _load_log.append(f"Estadísticas final: {len(df)} filas pre-agregadas")
-    return df
+    # Agregar columnas derivadas al core
+    df_core["MES"] = df_core["MES"].astype(str)
+    df_core["ANO"] = df_core["MES"].str[:4]
+    df_core["MES_NUM"] = df_core["MES"].str[4:6].astype(int)
+    df_core["PERIODO"] = pd.to_datetime(df_core["MES"], format="%Y%m")
+    df_core["MES_NOMBRE"] = df_core["PERIODO"].dt.strftime("%b %Y")
+    _to_category(df_core, CORE_AGG_COLS + ["ANO", "MES_NOMBRE"])
+
+    # Agregar columnas derivadas al merc
+    if not df_merc.empty:
+        df_merc["MES"] = df_merc["MES"].astype(str)
+        df_merc["ANO"] = df_merc["MES"].str[:4]
+        df_merc["MES_NUM"] = df_merc["MES"].str[4:6].astype(int)
+        _to_category(df_merc, MERC_AGG_COLS + ["ANO"])
+
+    # Agregar columnas derivadas al muni
+    if not muni_acc.empty:
+        muni_acc["MES"] = muni_acc["MES"].astype(str)
+        muni_acc["ANO"] = muni_acc["MES"].str[:4]
+        muni_acc["MES_NUM"] = muni_acc["MES"].str[4:6].astype(int)
+
+    _load_log.append(
+        "Estadisticas final: core={}, merc={}, muni={} filas".format(
+            len(df_core), len(df_merc), len(muni_acc)
+        )
+    )
+    return df_core, df_merc, muni_acc
 
 
 @st.cache_data(ttl=3600)
@@ -203,9 +272,11 @@ def load_ranking():
             df = pd.read_excel(f)
             if "Nombre Empresa" in df.columns:
                 frames.append(df)
-                _load_log.append(f"OK ranking: {basename} ({len(df)} filas)")
+                _load_log.append(
+                    "OK ranking: {} ({} filas)".format(basename, len(df))
+                )
         except Exception as e:
-            _load_log.append(f"ERROR ranking {basename}: {e}")
+            _load_log.append("ERROR ranking {}: {}".format(basename, e))
 
     if not frames:
         _load_log.append("SIN DATOS: No se encontraron archivos de ranking")
@@ -224,10 +295,8 @@ def load_sicetac():
     data_dir = _get_data_dir()
     agg_frames = []
 
-    all_files = (
-        sorted(glob.glob(os.path.join(data_dir, "Sicetac_*.parquet")))
-        + sorted(glob.glob(os.path.join(data_dir, "Sicetac_*.xlsx")))
-    )
+    all_files = sorted(glob.glob(os.path.join(data_dir, "Sicetac_*.parquet")))
+    all_files += sorted(glob.glob(os.path.join(data_dir, "Sicetac_*.xlsx")))
 
     for f in all_files:
         try:
@@ -236,30 +305,37 @@ def load_sicetac():
             else:
                 raw = pd.read_excel(f, usecols=lambda c: c in SICETAC_COLUMNS)
 
-            _load_log.append(f"OK sicetac: {os.path.basename(f)} ({len(raw)} filas)")
+            _load_log.append(
+                "OK sicetac: {} ({} filas)".format(os.path.basename(f), len(raw))
+            )
 
             raw["PERIODO"] = raw["PERIODO"].astype(str).str[:6]
-            # Normalizar códigos DANE a entero
             for dcol in ["ORIGEN", "DESTINO"]:
                 if dcol in raw.columns:
-                    raw[dcol] = pd.to_numeric(raw[dcol], errors="coerce").fillna(0).astype("int64")
+                    raw[dcol] = pd.to_numeric(
+                        raw[dcol], errors="coerce"
+                    ).fillna(0).astype("int64")
 
             agg = raw.groupby(
-                ["PERIODO", "CONFIGURACION", "ORIGEN", "NOMORIGEN", "DESTINO", "NOMDESTINO"],
+                ["PERIODO", "CONFIGURACION", "ORIGEN", "NOMORIGEN",
+                 "DESTINO", "NOMDESTINO"],
                 as_index=False, observed=True,
             ).agg(
                 VALOR_SUMA=("VALOR", "sum"),
                 DISTANCIA_SUMA=("DISTANCIA", "sum"),
                 CONTEO=("VALOR", "count"),
             )
-            # Convertir a category lo antes posible
-            _to_category(agg, ["PERIODO", "CONFIGURACION", "NOMORIGEN", "NOMDESTINO"])
+            _to_category(
+                agg, ["PERIODO", "CONFIGURACION", "NOMORIGEN", "NOMDESTINO"]
+            )
             agg_frames.append(agg)
             del raw
             gc.collect()
 
         except Exception as e:
-            _load_log.append(f"ERROR sicetac {os.path.basename(f)}: {e}")
+            _load_log.append(
+                "ERROR sicetac {}: {}".format(os.path.basename(f), e)
+            )
 
     if not agg_frames:
         _load_log.append("SIN DATOS: No se encontraron archivos SICETAC")
@@ -270,7 +346,8 @@ def load_sicetac():
     gc.collect()
 
     df = df.groupby(
-        ["PERIODO", "CONFIGURACION", "ORIGEN", "NOMORIGEN", "DESTINO", "NOMDESTINO"],
+        ["PERIODO", "CONFIGURACION", "ORIGEN", "NOMORIGEN",
+         "DESTINO", "NOMDESTINO"],
         as_index=False, observed=True,
     ).agg(
         VALOR_SUMA=("VALOR_SUMA", "sum"),
@@ -281,43 +358,46 @@ def load_sicetac():
     df["DISTANCIA"] = df["DISTANCIA_SUMA"] / df["CONTEO"]
 
     _to_category(df, ["PERIODO", "CONFIGURACION", "NOMORIGEN", "NOMDESTINO"])
-    _load_log.append(f"SICETAC final: {len(df)} filas pre-agregadas")
+    _load_log.append(
+        "SICETAC final: {} filas pre-agregadas".format(len(df))
+    )
     return df
 
 
 @st.cache_data(ttl=3600)
 def load_costos_fp():
-    """Carga archivos Costo_fp_sinCYD_*.xlsx (un archivo por mes).
-
-    Mapeo flexible de columnas: busca por coincidencia parcial e
-    insensible a mayúsculas / tildes para no depender del nombre exacto.
-    """
+    # Carga archivos Costo_fp_sinCYD_*.xlsx (un archivo por mes).
     data_dir = _get_data_dir()
     frames = []
 
-    # Buscar archivos nuevos primero; si existen, NO cargar el formato viejo
-    new_files = sorted(glob.glob(os.path.join(data_dir, "Costo_fp_sinCYD_*.xlsx")))
+    new_files = sorted(
+        glob.glob(os.path.join(data_dir, "Costo_fp_sinCYD_*.xlsx"))
+    )
     if new_files:
         all_files = new_files
-        _load_log.append(f"FP: usando {len(new_files)} archivos formato nuevo")
+        _load_log.append(
+            "FP: usando {} archivos formato nuevo".format(len(new_files))
+        )
     else:
-        all_files = sorted(glob.glob(os.path.join(data_dir, "Costo ruta flota propia*.xlsx")))
-        _load_log.append(f"FP: usando {len(all_files)} archivos formato anterior")
+        all_files = sorted(
+            glob.glob(os.path.join(data_dir, "Costo ruta flota propia*.xlsx"))
+        )
+        _load_log.append(
+            "FP: usando {} archivos formato anterior".format(len(all_files))
+        )
 
-    # Mapeo: nombre interno → patrones de búsqueda en las columnas del Excel
     COL_MAP = {
-        "fecha":       ["fecha"],
+        "fecha": ["fecha"],
         "centro_orig": ["centro origen"],
         "centro_dest": ["centro destino"],
-        "cod_muni_o":  ["municio origen", "municipio origen"],
-        "cod_muni_d":  ["municipio destino"],
-        "config":      ["configuracion", "configuración"],
-        "naturaleza":  ["naturaleza"],
-        "costo":       ["costo sin cyd", "costo sin c y d"],
+        "cod_muni_o": ["municio origen", "municipio origen"],
+        "cod_muni_d": ["municipio destino"],
+        "config": ["configuracion", "configuración"],
+        "naturaleza": ["naturaleza"],
+        "costo": ["costo sin cyd", "costo sin c y d"],
     }
 
     def _find_col(actual_cols, patterns):
-        """Encuentra la primera columna que coincide (case-insensitive) con los patrones."""
         lower_map = {c.strip().lower(): c for c in actual_cols}
         for pat in patterns:
             if pat in lower_map:
@@ -327,9 +407,12 @@ def load_costos_fp():
     for f in all_files:
         try:
             raw = pd.read_excel(f)
-            _load_log.append(f"OK costos: {os.path.basename(f)} ({len(raw)} filas, cols: {list(raw.columns[:10])})")
+            _load_log.append(
+                "OK costos: {} ({} filas, cols: {})".format(
+                    os.path.basename(f), len(raw), list(raw.columns[:10])
+                )
+            )
 
-            # Renombrar columnas al nombre interno usando el mapeo flexible
             rename = {}
             for internal, pats in COL_MAP.items():
                 found = _find_col(raw.columns, pats)
@@ -340,7 +423,9 @@ def load_costos_fp():
             frames.append(raw)
             del raw
         except Exception as e:
-            _load_log.append(f"ERROR costos {os.path.basename(f)}: {e}")
+            _load_log.append(
+                "ERROR costos {}: {}".format(os.path.basename(f), e)
+            )
 
     if not frames:
         _load_log.append("SIN DATOS: No se encontraron archivos de costos FP")
@@ -352,30 +437,34 @@ def load_costos_fp():
 
     df = df.drop_duplicates()
 
-    # Fecha y mes
     if "fecha" in df.columns:
         df["fecha"] = pd.to_datetime(df["fecha"], errors="coerce")
         df["MES_FP"] = df["fecha"].dt.strftime("%Y%m")
 
-    # Códigos DANE de municipio (enteros)
     for col in ["cod_muni_o", "cod_muni_d"]:
         if col in df.columns:
-            df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0).astype("int64")
+            df[col] = pd.to_numeric(
+                df[col], errors="coerce"
+            ).fillna(0).astype("int64")
 
-    # Costo sin CyD — ya viene calculado en el nuevo formato
     if "costo" in df.columns:
-        # Intentar primero como numérico directo
         df["Flete_sin_CyD"] = pd.to_numeric(df["costo"], errors="coerce")
-        # Si falla (viene como texto con puntos de miles), parsear formato colombiano
-        if df["Flete_sin_CyD"].isna().sum() > df["Flete_sin_CyD"].notna().sum() and df["costo"].notna().any():
+        if (
+            df["Flete_sin_CyD"].isna().sum() > df["Flete_sin_CyD"].notna().sum()
+            and df["costo"].notna().any()
+        ):
             df["Flete_sin_CyD"] = pd.to_numeric(
-                df["costo"].astype(str).str.replace(".", "", regex=False).str.replace(",", ".", regex=False),
+                df["costo"].astype(str)
+                .str.replace(".", "", regex=False)
+                .str.replace(",", ".", regex=False),
                 errors="coerce",
             )
 
-    # Compatibilidad con formato anterior (Flete Calculado - cargue - descargue)
     if "Flete_sin_CyD" not in df.columns or df["Flete_sin_CyD"].isna().all():
-        flete_col = _find_col(df.columns, ["flete calculado carrocería", "flete calculado carroceria"])
+        flete_col = _find_col(
+            df.columns,
+            ["flete calculado carrocería", "flete calculado carroceria"],
+        )
         cargue_col = _find_col(df.columns, ["costo cargue"])
         descargue_col = _find_col(df.columns, ["costo descargue"])
         if flete_col:
@@ -385,583 +474,914 @@ def load_costos_fp():
                 - (df[descargue_col].fillna(0) if descargue_col else 0)
             )
 
-    # Renombrar a nombres internos finales
     rename_final = {
         "cod_muni_o": "COD_MUNI_ORIG",
         "cod_muni_d": "COD_MUNI_DEST",
         "config": "CONFIG_FP",
         "naturaleza": "NATURALEZA_FP",
     }
-    df = df.rename(columns={k: v for k, v in rename_final.items() if k in df.columns})
+    df = df.rename(
+        columns={k: v for k, v in rename_final.items() if k in df.columns}
+    )
 
     _load_log.append(
-        f"FP final: {len(df)} filas, cols internas: "
-        f"COD_MUNI_ORIG={'COD_MUNI_ORIG' in df.columns}, "
-        f"Flete_sin_CyD={'Flete_sin_CyD' in df.columns and df['Flete_sin_CyD'].notna().any()}, "
-        f"MES_FP={'MES_FP' in df.columns}"
+        "FP final: {} filas, cols internas: COD_MUNI_ORIG={}, "
+        "Flete_sin_CyD={}, MES_FP={}".format(
+            len(df),
+            "COD_MUNI_ORIG" in df.columns,
+            "Flete_sin_CyD" in df.columns and df["Flete_sin_CyD"].notna().any(),
+            "MES_FP" in df.columns,
+        )
     )
     return df
 
 
-# ─── Layout de gráficos Plotly ───────────────────────────────────────────────
+# --- Layout de graficos Plotly ---
 def chart_layout(fig, title="", height=400):
     fig.update_layout(
-        title=dict(text=title, font=dict(size=16, color=TEXT_PRIMARY, family="system-ui, sans-serif")),
+        title=dict(
+            text=title,
+            font=dict(size=16, color=TEXT_PRIMARY, family="system-ui, sans-serif"),
+        ),
         plot_bgcolor=SURFACE,
         paper_bgcolor="rgba(0,0,0,0)",
-        font=dict(family="system-ui, -apple-system, 'Segoe UI', sans-serif", color=TEXT_SECONDARY, size=12),
+        font=dict(
+            family="system-ui, -apple-system, 'Segoe UI', sans-serif",
+            color=TEXT_SECONDARY, size=12,
+        ),
         height=height,
         margin=dict(l=40, r=20, t=50, b=40),
-        xaxis=dict(gridcolor=GRIDLINE, linecolor=BASELINE, zerolinecolor=BASELINE, tickfont=dict(color=TEXT_SECONDARY)),
-        yaxis=dict(gridcolor=GRIDLINE, linecolor=BASELINE, zerolinecolor=BASELINE, tickfont=dict(color=TEXT_SECONDARY)),
-        legend=dict(bgcolor="rgba(0,0,0,0)", font=dict(color=TEXT_SECONDARY, size=11)),
-        hoverlabel=dict(bgcolor="white", font_size=12, font_family="system-ui, sans-serif"),
+        xaxis=dict(
+            gridcolor=GRIDLINE, linecolor=BASELINE,
+            zerolinecolor=BASELINE, tickfont=dict(color=TEXT_SECONDARY),
+        ),
+        yaxis=dict(
+            gridcolor=GRIDLINE, linecolor=BASELINE,
+            zerolinecolor=BASELINE, tickfont=dict(color=TEXT_SECONDARY),
+        ),
+        legend=dict(
+            bgcolor="rgba(0,0,0,0)",
+            font=dict(color=TEXT_SECONDARY, size=11),
+        ),
+        hoverlabel=dict(
+            bgcolor="white", font_size=12,
+            font_family="system-ui, sans-serif",
+        ),
     )
     return fig
 
 
-# ─── Cargar todos los datasets ───────────────────────────────────────────────
+# --- Cargar todos los datasets ---
 try:
-    df_stats = load_estadisticas()
+    df_core, df_merc, df_muni = load_estadisticas()
 except Exception as e:
-    st.error(f"Error cargando Estadísticas: {e}")
-    df_stats = pd.DataFrame()
+    st.error("Error cargando Estadisticas: {}".format(e))
+    df_core = pd.DataFrame()
+    df_merc = pd.DataFrame()
+    df_muni = pd.DataFrame()
 
 try:
     df_ranking = load_ranking()
 except Exception as e:
-    st.error(f"Error cargando Ranking: {e}")
+    st.error("Error cargando Ranking: {}".format(e))
     df_ranking = pd.DataFrame()
 
 try:
     df_sicetac = load_sicetac()
 except Exception as e:
-    st.error(f"Error cargando SICETAC: {e}")
+    st.error("Error cargando SICETAC: {}".format(e))
     df_sicetac = pd.DataFrame()
 
 try:
     df_costos = load_costos_fp()
 except Exception as e:
-    st.error(f"Error cargando Costos FP: {e}")
+    st.error("Error cargando Costos FP: {}".format(e))
     df_costos = pd.DataFrame()
 
 gc.collect()
 
-# ─── Sidebar ─────────────────────────────────────────────────────────────────
+# --- Sidebar ---
 st.sidebar.title("🚛 Tablero RNDC")
-st.sidebar.caption("Edinsa - Estadísticas de transporte")
+st.sidebar.caption("Edinsa - Estadisticas de transporte")
 
 pagina = st.sidebar.radio(
-    "Navegación",
-    ["📊 Ranking Empresa", "📦 Estadísticas de Carga", "💰 Comparativo FP y FM", "📋 Tabla Consolidada"],
+    "Navegacion",
+    [
+        "📊 Ranking Empresa",
+        "📦 Estadisticas de Carga",
+        "💰 Comparativo FP y FM",
+        "📋 Tabla Consolidada",
+    ],
     label_visibility="collapsed",
 )
 
 st.sidebar.divider()
 
-# ─── Filtros globales (para páginas 2 y 4) ───────────────────────────────────
-if not df_stats.empty:
-    años_disponibles = sorted(df_stats["AÑO"].unique())
-    año_sel = st.sidebar.multiselect("Año", años_disponibles, default=años_disponibles)
+# --- Filtros globales (para paginas 2 y 4) ---
+if not df_core.empty:
+    anos_disponibles = sorted(df_core["ANO"].unique())
+    ano_sel = st.sidebar.multiselect(
+        "Ano", anos_disponibles, default=anos_disponibles
+    )
 
-    meses_disponibles = sorted(df_stats[df_stats["AÑO"].isin(año_sel)]["MES_NUM"].unique())
+    meses_disponibles = sorted(
+        df_core[df_core["ANO"].isin(ano_sel)]["MES_NUM"].unique()
+    )
     mes_sel = st.sidebar.multiselect(
         "Mes", meses_disponibles, default=meses_disponibles,
         format_func=lambda x: MESES_CORTO.get(x, str(x)),
     )
 
-    mask = df_stats["AÑO"].isin(año_sel) & df_stats["MES_NUM"].isin(mes_sel)
-    df_filtrado = df_stats[mask].copy()
+    mask = df_core["ANO"].isin(ano_sel) & df_core["MES_NUM"].isin(mes_sel)
+    df_filtrado = df_core[mask].copy()
+
+    # Filtro equivalente para merc
+    if not df_merc.empty:
+        mask_merc = df_merc["ANO"].isin(ano_sel) & df_merc["MES_NUM"].isin(mes_sel)
+        df_merc_filtrado = df_merc[mask_merc].copy()
+    else:
+        df_merc_filtrado = pd.DataFrame()
 else:
-    df_filtrado = df_stats
-    año_sel = []
+    df_filtrado = df_core
+    df_merc_filtrado = df_merc
+    ano_sel = []
     mes_sel = []
 
 
-# ── Constantes EDINSA ─────────────────────────────────────────────────────────
+# -- Constantes EDINSA --
 EDINSA_NAME = "EMPRESA DE DISTRIBUCIONES INDUSTRIALES S.A."
 EDINSA_COLOR = COLORS["orange"]
 OTHER_COLOR = COLORS["blue"]
 
-# ══════════════════════════════════════════════════════════════════════════════
-# PÁGINA 1: RANKING EMPRESA
-# ══════════════════════════════════════════════════════════════════════════════
+# ======================================================================
+# PAGINA 1: RANKING EMPRESA
+# ======================================================================
 if pagina == "📊 Ranking Empresa":
     st.title("Ranking Empresa RNDC")
 
     if df_ranking.empty:
-        st.warning("No se encontró el archivo de ranking de empresas.")
+        st.warning("No se encontro el archivo de ranking de empresas.")
     else:
         df_rank = df_ranking.copy()
         df_rank = df_rank.dropna(subset=["Nombre Empresa"])
         df_rank["Nombre Empresa"] = df_rank["Nombre Empresa"].str.strip()
-        df_rank["Toneladas"] = pd.to_numeric(df_rank["Toneladas"], errors="coerce").fillna(0)
-        df_rank["Manifiestos Radicados"] = pd.to_numeric(df_rank["Manifiestos Radicados"], errors="coerce").fillna(0)
+        df_rank["Toneladas"] = pd.to_numeric(
+            df_rank["Toneladas"], errors="coerce"
+        ).fillna(0)
+        df_rank["Manifiestos Radicados"] = pd.to_numeric(
+            df_rank["Manifiestos Radicados"], errors="coerce"
+        ).fillna(0)
 
         if "Date" in df_rank.columns:
             df_rank["Date"] = pd.to_datetime(df_rank["Date"], errors="coerce")
             df_rank["Mes_Num"] = df_rank["Date"].dt.month
-            df_rank["Año"] = df_rank["Date"].dt.year
+            df_rank["Ano"] = df_rank["Date"].dt.year
             df_rank["Mes_Nombre"] = df_rank["Mes_Num"].map(MESES_NOMBRE)
 
-        if "Año" in df_rank.columns:
-            años_rank = sorted(df_rank["Año"].dropna().unique().astype(int))
-            año_rank_sel = st.sidebar.multiselect("Año (Ranking)", años_rank, default=años_rank, key="rank_año")
-            df_rank = df_rank[df_rank["Año"].isin(año_rank_sel)]
+        if "Ano" in df_rank.columns:
+            anos_rank = sorted(
+                df_rank["Ano"].dropna().unique().astype(int)
+            )
+            ano_rank_sel = st.sidebar.multiselect(
+                "Ano (Ranking)", anos_rank, default=anos_rank, key="rank_ano"
+            )
+            df_rank = df_rank[df_rank["Ano"].isin(ano_rank_sel)]
 
         total_empresas = df_rank["Nombre Empresa"].nunique()
         total_tons = df_rank["Toneladas"].sum()
 
-        df_edinsa = df_rank[df_rank["Nombre Empresa"].str.contains("DISTRIBUCIONES INDUSTRIALES", case=False, na=False)]
+        df_edinsa = df_rank[
+            df_rank["Nombre Empresa"].str.contains(
+                "DISTRIBUCIONES INDUSTRIALES", case=False, na=False
+            )
+        ]
         tons_edinsa = df_edinsa["Toneladas"].sum()
-        pct_edinsa = (tons_edinsa / total_tons * 100) if total_tons > 0 else 0
+        pct_edinsa = (
+            (tons_edinsa / total_tons * 100) if total_tons > 0 else 0
+        )
 
         col1, col2, col3, col4 = st.columns(4)
-        col1.metric("Empresas", f"{total_empresas:,.0f}")
-        col2.metric("Tons Totales Mercado", f"{total_tons:,.0f}")
-        col3.metric("Tons EDINSA", f"{tons_edinsa:,.0f}")
-        col4.metric("% Participación EDINSA", f"{pct_edinsa:.1f} %")
+        col1.metric("Empresas", "{:,.0f}".format(total_empresas))
+        col2.metric("Tons Totales Mercado", "{:,.0f}".format(total_tons))
+        col3.metric("Tons EDINSA", "{:,.0f}".format(tons_edinsa))
+        col4.metric("% Participacion EDINSA", "{:.1f} %".format(pct_edinsa))
 
         st.divider()
 
         if "Mes_Nombre" in df_rank.columns and not df_edinsa.empty:
             st.subheader("% de Tons transportadas por EDINSA en Colombia")
 
-            tons_mes_total = df_rank.groupby(["Mes_Num", "Mes_Nombre"], as_index=False)["Toneladas"].sum()
+            tons_mes_total = df_rank.groupby(
+                ["Mes_Num", "Mes_Nombre"], as_index=False
+            )["Toneladas"].sum()
             tons_mes_total.columns = ["Mes_Num", "Mes", "Tons Empresa"]
-            tons_mes_edinsa = df_edinsa.groupby(["Mes_Num", "Mes_Nombre"], as_index=False)["Toneladas"].sum()
+            tons_mes_edinsa = df_edinsa.groupby(
+                ["Mes_Num", "Mes_Nombre"], as_index=False
+            )["Toneladas"].sum()
             tons_mes_edinsa.columns = ["Mes_Num", "Mes", "Tons EDINSA"]
 
-            df_participacion = tons_mes_total.merge(tons_mes_edinsa, on=["Mes_Num", "Mes"], how="left")
-            df_participacion["Tons EDINSA"] = df_participacion["Tons EDINSA"].fillna(0)
-            df_participacion["% participación tons EDINSA"] = (
-                df_participacion["Tons EDINSA"] / df_participacion["Tons Empresa"] * 100
+            df_participacion = tons_mes_total.merge(
+                tons_mes_edinsa, on=["Mes_Num", "Mes"], how="left"
+            )
+            df_participacion["Tons EDINSA"] = df_participacion[
+                "Tons EDINSA"
+            ].fillna(0)
+            df_participacion["% participacion tons EDINSA"] = (
+                df_participacion["Tons EDINSA"]
+                / df_participacion["Tons Empresa"]
+                * 100
             ).round(1)
             df_participacion = df_participacion.sort_values("Mes_Num")
 
-            total_row = pd.DataFrame([{
-                "Mes_Num": 99, "Mes": "Total",
-                "Tons EDINSA": df_participacion["Tons EDINSA"].sum(),
-                "Tons Empresa": df_participacion["Tons Empresa"].sum(),
-                "% participación tons EDINSA": round(
-                    df_participacion["Tons EDINSA"].sum() / df_participacion["Tons Empresa"].sum() * 100, 1
-                ) if df_participacion["Tons Empresa"].sum() > 0 else 0,
-            }])
-            df_participacion = pd.concat([df_participacion, total_row], ignore_index=True)
+            total_row = pd.DataFrame(
+                [
+                    {
+                        "Mes_Num": 99,
+                        "Mes": "Total",
+                        "Tons EDINSA": df_participacion["Tons EDINSA"].sum(),
+                        "Tons Empresa": df_participacion["Tons Empresa"].sum(),
+                        "% participacion tons EDINSA": round(
+                            df_participacion["Tons EDINSA"].sum()
+                            / df_participacion["Tons Empresa"].sum()
+                            * 100,
+                            1,
+                        )
+                        if df_participacion["Tons Empresa"].sum() > 0
+                        else 0,
+                    }
+                ]
+            )
+            df_participacion = pd.concat(
+                [df_participacion, total_row], ignore_index=True
+            )
 
-            df_show_part = df_participacion[["Mes", "Tons EDINSA", "Tons Empresa", "% participación tons EDINSA"]].copy()
+            df_show_part = df_participacion[
+                ["Mes", "Tons EDINSA", "Tons Empresa", "% participacion tons EDINSA"]
+            ].copy()
             st.dataframe(
-                df_show_part.style.format({
-                    "Tons EDINSA": "{:,.0f}", "Tons Empresa": "{:,.0f}",
-                    "% participación tons EDINSA": "{:.1f} %",
-                }).apply(
-                    lambda row: ["font-weight: bold"] * len(row) if row["Mes"] == "Total" else [""] * len(row),
+                df_show_part.style.format(
+                    {
+                        "Tons EDINSA": "{:,.0f}",
+                        "Tons Empresa": "{:,.0f}",
+                        "% participacion tons EDINSA": "{:.1f} %",
+                    }
+                ).apply(
+                    lambda row: ["font-weight: bold"] * len(row)
+                    if row["Mes"] == "Total"
+                    else [""] * len(row),
                     axis=1,
                 ),
-                width="stretch", hide_index=True,
+                width="stretch",
+                hide_index=True,
                 height=min(400, (len(df_participacion) + 1) * 38),
             )
 
-            df_part_chart = df_participacion[df_participacion["Mes"] != "Total"].copy()
+            df_part_chart = df_participacion[
+                df_participacion["Mes"] != "Total"
+            ].copy()
             fig_part = go.Figure()
-            fig_part.add_trace(go.Bar(
-                x=df_part_chart["Mes"], y=df_part_chart["Tons EDINSA"],
-                name="Tons EDINSA", marker=dict(color=EDINSA_COLOR, cornerradius=4),
-                hovertemplate="<b>%{x}</b><br>Tons EDINSA: %{y:,.0f}<extra></extra>",
-            ))
-            fig_part.add_trace(go.Scatter(
-                x=df_part_chart["Mes"], y=df_part_chart["% participación tons EDINSA"],
-                name="% Participación", mode="lines+markers+text",
-                text=[f"{v:.1f}%" for v in df_part_chart["% participación tons EDINSA"]],
-                textposition="top center", textfont=dict(color=TEXT_SECONDARY, size=11),
-                line=dict(color=COLORS["aqua"], width=2), marker=dict(size=8),
-                hovertemplate="<b>%{x}</b><br>Participación: %{y:.1f}%<extra></extra>",
-                yaxis="y2",
-            ))
-            fig_part.update_layout(yaxis2=dict(
-                overlaying="y", side="right", gridcolor="rgba(0,0,0,0)",
-                tickfont=dict(color=COLORS["aqua"]), ticksuffix="%",
-                range=[0, max(df_part_chart["% participación tons EDINSA"].max() * 2, 5)],
-            ))
-            chart_layout(fig_part, "Toneladas EDINSA y % Participación por Mes", height=380)
+            fig_part.add_trace(
+                go.Bar(
+                    x=df_part_chart["Mes"],
+                    y=df_part_chart["Tons EDINSA"],
+                    name="Tons EDINSA",
+                    marker=dict(color=EDINSA_COLOR, cornerradius=4),
+                    hovertemplate=(
+                        "<b>%{x}</b><br>Tons EDINSA: %{y:,.0f}<extra></extra>"
+                    ),
+                )
+            )
+            fig_part.add_trace(
+                go.Scatter(
+                    x=df_part_chart["Mes"],
+                    y=df_part_chart["% participacion tons EDINSA"],
+                    name="% Participacion",
+                    mode="lines+markers+text",
+                    text=[
+                        "{:.1f}%".format(v)
+                        for v in df_part_chart["% participacion tons EDINSA"]
+                    ],
+                    textposition="top center",
+                    textfont=dict(color=TEXT_SECONDARY, size=11),
+                    line=dict(color=COLORS["aqua"], width=2),
+                    marker=dict(size=8),
+                    hovertemplate=(
+                        "<b>%{x}</b><br>Participacion: %{y:.1f}%<extra></extra>"
+                    ),
+                    yaxis="y2",
+                )
+            )
+            fig_part.update_layout(
+                yaxis2=dict(
+                    overlaying="y",
+                    side="right",
+                    gridcolor="rgba(0,0,0,0)",
+                    tickfont=dict(color=COLORS["aqua"]),
+                    ticksuffix="%",
+                    range=[
+                        0,
+                        max(
+                            df_part_chart[
+                                "% participacion tons EDINSA"
+                            ].max()
+                            * 2,
+                            5,
+                        ),
+                    ],
+                )
+            )
+            chart_layout(
+                fig_part,
+                "Toneladas EDINSA y % Participacion por Mes",
+                height=380,
+            )
             st.plotly_chart(fig_part, width="stretch")
 
         st.divider()
 
         top_n = st.slider("Top empresas a mostrar", 10, 50, 20)
-        df_rank_agg = df_rank.groupby("Nombre Empresa", as_index=False).agg(
-            Toneladas=("Toneladas", "sum"), Manifiestos=("Manifiestos Radicados", "sum"),
+        df_rank_agg = df_rank.groupby(
+            "Nombre Empresa", as_index=False
+        ).agg(
+            Toneladas=("Toneladas", "sum"),
+            Manifiestos=("Manifiestos Radicados", "sum"),
         )
-        df_top = df_rank_agg.nlargest(top_n, "Toneladas").sort_values("Toneladas")
-        df_top["es_edinsa"] = df_top["Nombre Empresa"].str.contains("DISTRIBUCIONES INDUSTRIALES", case=False, na=False)
-        bar_colors = [EDINSA_COLOR if es else OTHER_COLOR for es in df_top["es_edinsa"]]
+        df_top = df_rank_agg.nlargest(top_n, "Toneladas").sort_values(
+            "Toneladas"
+        )
+        df_top["es_edinsa"] = df_top["Nombre Empresa"].str.contains(
+            "DISTRIBUCIONES INDUSTRIALES", case=False, na=False
+        )
+        bar_colors = [
+            EDINSA_COLOR if es else OTHER_COLOR
+            for es in df_top["es_edinsa"]
+        ]
 
-        fig_bar = go.Figure(go.Bar(
-            y=df_top["Nombre Empresa"], x=df_top["Toneladas"], orientation="h",
-            marker=dict(color=bar_colors, cornerradius=4),
-            hovertemplate="<b>%{y}</b><br>Toneladas: %{x:,.0f}<extra></extra>",
-        ))
-        chart_layout(fig_bar, f"Top {top_n} Empresas por Toneladas", height=max(400, top_n * 28))
+        fig_bar = go.Figure(
+            go.Bar(
+                y=df_top["Nombre Empresa"],
+                x=df_top["Toneladas"],
+                orientation="h",
+                marker=dict(color=bar_colors, cornerradius=4),
+                hovertemplate=(
+                    "<b>%{y}</b><br>Toneladas: %{x:,.0f}<extra></extra>"
+                ),
+            )
+        )
+        chart_layout(
+            fig_bar,
+            "Top {} Empresas por Toneladas".format(top_n),
+            height=max(400, top_n * 28),
+        )
         st.plotly_chart(fig_bar, width="stretch")
 
         col_a, col_b = st.columns(2)
         with col_a:
             st.subheader("Tabla por Empresa")
-            df_tabla = df_rank_agg[["Nombre Empresa", "Manifiestos", "Toneladas"]].copy()
-            df_tabla["% Participación"] = (df_tabla["Toneladas"] / df_tabla["Toneladas"].sum() * 100).round(2)
-            df_tabla = df_tabla.sort_values("Toneladas", ascending=False).reset_index(drop=True)
+            df_tabla = df_rank_agg[
+                ["Nombre Empresa", "Manifiestos", "Toneladas"]
+            ].copy()
+            df_tabla["% Participacion"] = (
+                df_tabla["Toneladas"] / df_tabla["Toneladas"].sum() * 100
+            ).round(2)
+            df_tabla = df_tabla.sort_values(
+                "Toneladas", ascending=False
+            ).reset_index(drop=True)
             df_tabla.index += 1
 
             def highlight_edinsa(row):
-                if "DISTRIBUCIONES INDUSTRIALES" in str(row["Nombre Empresa"]).upper():
-                    return [f"background-color: {EDINSA_COLOR}22; font-weight: bold; color: {EDINSA_COLOR}"] * len(row)
+                if "DISTRIBUCIONES INDUSTRIALES" in str(
+                    row["Nombre Empresa"]
+                ).upper():
+                    return [
+                        "background-color: {}22; font-weight: bold; color: {}".format(
+                            EDINSA_COLOR, EDINSA_COLOR
+                        )
+                    ] * len(row)
                 return [""] * len(row)
 
             st.dataframe(
-                df_tabla.style.apply(highlight_edinsa, axis=1).format({
-                    "Manifiestos": "{:,.0f}", "Toneladas": "{:,.0f}", "% Participación": "{:.2f} %",
-                }),
-                width="stretch", height=500,
+                df_tabla.style.apply(highlight_edinsa, axis=1).format(
+                    {
+                        "Manifiestos": "{:,.0f}",
+                        "Toneladas": "{:,.0f}",
+                        "% Participacion": "{:.2f} %",
+                    }
+                ),
+                width="stretch",
+                height=500,
             )
 
         with col_b:
             st.subheader("Manifiestos vs Toneladas")
             df_top_scatter = df_rank_agg.nlargest(top_n, "Toneladas")
-            df_top_scatter["es_edinsa"] = df_top_scatter["Nombre Empresa"].str.contains(
-                "DISTRIBUCIONES INDUSTRIALES", case=False, na=False)
+            df_top_scatter["es_edinsa"] = df_top_scatter[
+                "Nombre Empresa"
+            ].str.contains(
+                "DISTRIBUCIONES INDUSTRIALES", case=False, na=False
+            )
             df_other = df_top_scatter[~df_top_scatter["es_edinsa"]]
             df_ed = df_top_scatter[df_top_scatter["es_edinsa"]]
 
             fig_scatter = go.Figure()
-            fig_scatter.add_trace(go.Scatter(
-                x=df_other["Manifiestos"], y=df_other["Toneladas"],
-                mode="markers", name="Otras empresas", text=df_other["Nombre Empresa"],
-                marker=dict(color=OTHER_COLOR, size=10, line=dict(width=1, color="white")),
-                hovertemplate="<b>%{text}</b><br>Manifiestos: %{x:,.0f}<br>Toneladas: %{y:,.0f}<extra></extra>",
-            ))
+            fig_scatter.add_trace(
+                go.Scatter(
+                    x=df_other["Manifiestos"],
+                    y=df_other["Toneladas"],
+                    mode="markers",
+                    name="Otras empresas",
+                    text=df_other["Nombre Empresa"],
+                    marker=dict(
+                        color=OTHER_COLOR, size=10,
+                        line=dict(width=1, color="white"),
+                    ),
+                    hovertemplate=(
+                        "<b>%{text}</b><br>Manifiestos: %{x:,.0f}"
+                        "<br>Toneladas: %{y:,.0f}<extra></extra>"
+                    ),
+                )
+            )
             if not df_ed.empty:
-                fig_scatter.add_trace(go.Scatter(
-                    x=df_ed["Manifiestos"], y=df_ed["Toneladas"],
-                    mode="markers+text", name="EDINSA", text=["EDINSA"],
-                    textposition="top center",
-                    textfont=dict(color=EDINSA_COLOR, size=12, family="system-ui, sans-serif"),
-                    marker=dict(color=EDINSA_COLOR, size=16, line=dict(width=2, color="white"), symbol="diamond"),
-                    hovertemplate="<b>EDINSA</b><br>Manifiestos: %{x:,.0f}<br>Toneladas: %{y:,.0f}<extra></extra>",
-                ))
-            chart_layout(fig_scatter, "Relación Manifiestos vs Toneladas", height=500)
+                fig_scatter.add_trace(
+                    go.Scatter(
+                        x=df_ed["Manifiestos"],
+                        y=df_ed["Toneladas"],
+                        mode="markers+text",
+                        name="EDINSA",
+                        text=["EDINSA"],
+                        textposition="top center",
+                        textfont=dict(
+                            color=EDINSA_COLOR, size=12,
+                            family="system-ui, sans-serif",
+                        ),
+                        marker=dict(
+                            color=EDINSA_COLOR, size=16,
+                            line=dict(width=2, color="white"),
+                            symbol="diamond",
+                        ),
+                        hovertemplate=(
+                            "<b>EDINSA</b><br>Manifiestos: %{x:,.0f}"
+                            "<br>Toneladas: %{y:,.0f}<extra></extra>"
+                        ),
+                    )
+                )
+            chart_layout(
+                fig_scatter, "Relacion Manifiestos vs Toneladas", height=500
+            )
             st.plotly_chart(fig_scatter, width="stretch")
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# PÁGINA 2: ESTADÍSTICAS DE CARGA
-# ══════════════════════════════════════════════════════════════════════════════
-elif pagina == "📦 Estadísticas de Carga":
-    st.title("Estadísticas de Carga")
+# ======================================================================
+# PAGINA 2: ESTADISTICAS DE CARGA
+# ======================================================================
+elif pagina == "📦 Estadisticas de Carga":
+    st.title("Estadisticas de Carga")
 
     if df_filtrado.empty:
         st.warning("No hay datos para los filtros seleccionados.")
     else:
-        # ── Filtros ──────────────────────────────────────────────────────────
+        # -- Filtros --
         col_f1, col_f2, col_f3, col_f4 = st.columns(4)
         with col_f1:
-            # Usar COD_CONFIG para mostrar formato corto como Power BI
-            configs_cod = sorted(df_filtrado["COD_CONFIG_VEHICULO"].dropna().unique().tolist())
+            configs_cod = sorted(
+                df_filtrado["COD_CONFIG_VEHICULO"].dropna().unique().tolist()
+            )
             configs_cod = [c for c in configs_cod if c.strip()]
-            config_sel = st.selectbox("Configuración", ["Todos"] + configs_cod, key="est_config")
+            config_sel = st.selectbox(
+                "Configuracion", ["Todos"] + configs_cod, key="est_config"
+            )
         with col_f2:
-            mercancias = ["Todos"] + sorted(df_filtrado["MERCANCIA"].dropna().unique().tolist())
-            mercancia_sel = st.selectbox("Mercancía", mercancias, key="est_merc")
+            if not df_merc_filtrado.empty:
+                mercancias = ["Todos"] + sorted(
+                    df_merc_filtrado["MERCANCIA"].dropna().unique().tolist()
+                )
+            else:
+                mercancias = ["Todos"]
+            mercancia_sel = st.selectbox(
+                "Mercancia", mercancias, key="est_merc"
+            )
         with col_f3:
-            deptos_orig = ["Todos"] + sorted(df_filtrado["DEPARTAMENTOORIGEN"].dropna().unique().tolist())
-            depto_orig_sel = st.selectbox("Departamento origen", deptos_orig, key="est_depto_o")
+            deptos_orig = ["Todos"] + sorted(
+                df_filtrado["DEPARTAMENTOORIGEN"].dropna().unique().tolist()
+            )
+            depto_orig_sel = st.selectbox(
+                "Departamento origen", deptos_orig, key="est_depto_o"
+            )
         with col_f4:
-            deptos_dest = ["Todos"] + sorted(df_filtrado["DEPARTAMENTODESTINO"].dropna().unique().tolist())
-            depto_dest_sel = st.selectbox("Departamento destino", deptos_dest, key="est_depto_d")
+            deptos_dest = ["Todos"] + sorted(
+                df_filtrado["DEPARTAMENTODESTINO"].dropna().unique().tolist()
+            )
+            depto_dest_sel = st.selectbox(
+                "Departamento destino", deptos_dest, key="est_depto_d"
+            )
 
-        col_f5, col_f6, col_f7, col_f8 = st.columns(4)
+        col_f5, _, _, _ = st.columns(4)
         with col_f5:
-            nat_options = ["Todos"] + sorted(df_filtrado["NATURALEZACARGA"].dropna().unique().tolist())
-            nat_sel = st.selectbox("Naturaleza de la carga", nat_options, key="est_nat")
-        with col_f6:
-            # Municipio origen (filtrado por depto)
-            df_temp = df_filtrado.copy()
-            if depto_orig_sel != "Todos":
-                df_temp = df_temp[df_temp["DEPARTAMENTOORIGEN"] == depto_orig_sel]
-            muni_orig_options = sorted(df_temp["MUNICIPIOORIGEN"].dropna().unique().tolist())
-            muni_orig_sel = st.selectbox("Municipio origen", ["Todos"] + muni_orig_options, key="est_muni_o")
-        with col_f7:
-            df_temp2 = df_filtrado.copy()
-            if depto_dest_sel != "Todos":
-                df_temp2 = df_temp2[df_temp2["DEPARTAMENTODESTINO"] == depto_dest_sel]
-            muni_dest_options = sorted(df_temp2["MUNICIPIODESTINO"].dropna().unique().tolist())
-            muni_dest_sel = st.selectbox("Municipio destino", ["Todos"] + muni_dest_options, key="est_muni_d")
+            nat_options = ["Todos"] + sorted(
+                df_filtrado["NATURALEZACARGA"].dropna().unique().tolist()
+            )
+            nat_sel = st.selectbox(
+                "Naturaleza de la carga", nat_options, key="est_nat"
+            )
 
-        # Aplicar filtros
+        # Aplicar filtros al core
         df_f = df_filtrado.copy()
         if config_sel != "Todos":
             df_f = df_f[df_f["COD_CONFIG_VEHICULO"] == config_sel]
-        if mercancia_sel != "Todos":
-            df_f = df_f[df_f["MERCANCIA"] == mercancia_sel]
         if depto_orig_sel != "Todos":
             df_f = df_f[df_f["DEPARTAMENTOORIGEN"] == depto_orig_sel]
         if depto_dest_sel != "Todos":
             df_f = df_f[df_f["DEPARTAMENTODESTINO"] == depto_dest_sel]
         if nat_sel != "Todos":
             df_f = df_f[df_f["NATURALEZACARGA"] == nat_sel]
-        if muni_orig_sel != "Todos":
-            df_f = df_f[df_f["MUNICIPIOORIGEN"] == muni_orig_sel]
-        if muni_dest_sel != "Todos":
-            df_f = df_f[df_f["MUNICIPIODESTINO"] == muni_dest_sel]
 
-        # ── KPIs ─────────────────────────────────────────────────────────────
+        # Aplicar filtros al merc (solo config y naturaleza aplican)
+        df_mf = df_merc_filtrado.copy() if not df_merc_filtrado.empty else pd.DataFrame()
+        if not df_mf.empty and mercancia_sel != "Todos":
+            df_mf = df_mf[df_mf["MERCANCIA"] == mercancia_sel]
+
+        # -- KPIs --
         total_viajes = df_f["VIAJESTOTALES"].sum()
         total_tons = df_f["TONELADAS"].sum()
         total_flete = df_f["VALORESPAGADOS"].sum()
         viajes_con_valor = df_f["VIAJES_CON_VALOR"].sum()
         flete_prom = total_flete / max(viajes_con_valor, 1)
 
-        # Promedio de flete por mes (promedio de los promedios mensuales)
         df_prom_mes = df_f.groupby("MES", observed=True).agg(
             V=("VALORESPAGADOS", "sum"), VC=("VIAJES_CON_VALOR", "sum"),
         )
         df_prom_mes["prom"] = df_prom_mes["V"] / df_prom_mes["VC"].replace(0, 1)
-        flete_prom_mensual = df_prom_mes["prom"].mean() if len(df_prom_mes) > 0 else 0
+        flete_prom_mensual = (
+            df_prom_mes["prom"].mean() if len(df_prom_mes) > 0 else 0
+        )
 
         col1, col2, col3, col4 = st.columns(4)
-        col1.metric("Viajes", f"{total_viajes:,.0f}")
-        col2.metric("Toneladas totales", f"{total_tons:,.0f}")
-        col3.metric("Flete promedio", f"${flete_prom:,.0f}")
-        col4.metric("Flete promedio mes", f"${flete_prom_mensual:,.0f}")
+        col1.metric("Viajes", "{:,.0f}".format(total_viajes))
+        col2.metric("Toneladas totales", "{:,.0f}".format(total_tons))
+        col3.metric("Flete promedio", "${:,.0f}".format(flete_prom))
+        col4.metric(
+            "Flete promedio mes", "${:,.0f}".format(flete_prom_mensual)
+        )
 
         st.divider()
 
-        # ── Gráfico 1: Flete promedio por mes, líneas por año ────────────────
-        # Solo viajes con valor > 0
-        df_flete_trend = df_f.groupby(["AÑO", "MES_NUM"], as_index=False, observed=True).agg(
+        # -- Grafico 1: Flete promedio por mes --
+        df_flete_trend = df_f.groupby(
+            ["ANO", "MES_NUM"], as_index=False, observed=True,
+        ).agg(
             VALORESPAGADOS=("VALORESPAGADOS", "sum"),
             VIAJES_CON_VALOR=("VIAJES_CON_VALOR", "sum"),
         )
-        df_flete_trend["Flete_Prom"] = df_flete_trend["VALORESPAGADOS"] / df_flete_trend["VIAJES_CON_VALOR"].replace(0, 1)
-        df_flete_trend["Mes_Label"] = df_flete_trend["MES_NUM"].map(MESES_NOMBRE)
-        df_flete_trend = df_flete_trend.sort_values(["AÑO", "MES_NUM"])
+        df_flete_trend["Flete_Prom"] = (
+            df_flete_trend["VALORESPAGADOS"]
+            / df_flete_trend["VIAJES_CON_VALOR"].replace(0, 1)
+        )
+        df_flete_trend["Mes_Label"] = df_flete_trend["MES_NUM"].map(
+            MESES_NOMBRE
+        )
+        df_flete_trend = df_flete_trend.sort_values(["ANO", "MES_NUM"])
 
         col_chart1, col_chart2 = st.columns(2)
 
         with col_chart1:
             fig_flete = go.Figure()
-            for año in sorted(df_flete_trend["AÑO"].unique()):
-                df_año = df_flete_trend[df_flete_trend["AÑO"] == año]
-                color = YEAR_COLORS.get(str(año), COLORS["violet"])
-                fig_flete.add_trace(go.Scatter(
-                    x=df_año["Mes_Label"], y=df_año["Flete_Prom"],
-                    name=str(año), mode="lines+markers+text",
-                    text=[f"{v:,.0f}" for v in df_año["Flete_Prom"]],
-                    textposition="top center", textfont=dict(size=9, color=color),
-                    line=dict(color=color, width=2), marker=dict(size=6),
-                    hovertemplate=f"<b>{año} - %{{x}}</b><br>Flete Prom: $%{{y:,.0f}}<extra></extra>",
-                ))
+            for ano in sorted(df_flete_trend["ANO"].unique()):
+                df_ano = df_flete_trend[df_flete_trend["ANO"] == ano]
+                color = YEAR_COLORS.get(str(ano), COLORS["violet"])
+                fig_flete.add_trace(
+                    go.Scatter(
+                        x=df_ano["Mes_Label"],
+                        y=df_ano["Flete_Prom"],
+                        name=str(ano),
+                        mode="lines+markers+text",
+                        text=[
+                            "{:,.0f}".format(v) for v in df_ano["Flete_Prom"]
+                        ],
+                        textposition="top center",
+                        textfont=dict(size=9, color=color),
+                        line=dict(color=color, width=2),
+                        marker=dict(size=6),
+                        hovertemplate=(
+                            "<b>{} - %{{x}}</b><br>"
+                            "Flete Prom: $%{{y:,.0f}}<extra></extra>".format(ano)
+                        ),
+                    )
+                )
             chart_layout(fig_flete, "Flete promedio", height=420)
-            fig_flete.update_layout(xaxis=dict(categoryorder="array",
-                                                categoryarray=list(MESES_NOMBRE.values())))
+            fig_flete.update_layout(
+                xaxis=dict(
+                    categoryorder="array",
+                    categoryarray=list(MESES_NOMBRE.values()),
+                )
+            )
             st.plotly_chart(fig_flete, width="stretch")
 
-        # ── Gráfico 2: Cantidad de viajes por mes, líneas por año ────────────
-        df_viajes_trend = df_f.groupby(["AÑO", "MES_NUM"], as_index=False, observed=True).agg(
-            Viajes=("VIAJESTOTALES", "sum"),
+        # -- Grafico 2: Cantidad de viajes por mes --
+        df_viajes_trend = df_f.groupby(
+            ["ANO", "MES_NUM"], as_index=False, observed=True,
+        ).agg(Viajes=("VIAJESTOTALES", "sum"))
+        df_viajes_trend["Mes_Label"] = df_viajes_trend["MES_NUM"].map(
+            MESES_NOMBRE
         )
-        df_viajes_trend["Mes_Label"] = df_viajes_trend["MES_NUM"].map(MESES_NOMBRE)
-        df_viajes_trend = df_viajes_trend.sort_values(["AÑO", "MES_NUM"])
+        df_viajes_trend = df_viajes_trend.sort_values(["ANO", "MES_NUM"])
 
         with col_chart2:
             fig_viajes = go.Figure()
-            for año in sorted(df_viajes_trend["AÑO"].unique()):
-                df_año = df_viajes_trend[df_viajes_trend["AÑO"] == año]
-                color = YEAR_COLORS.get(str(año), COLORS["violet"])
-                fig_viajes.add_trace(go.Scatter(
-                    x=df_año["Mes_Label"], y=df_año["Viajes"],
-                    name=str(año), mode="lines+markers+text",
-                    text=[f"{v:,.0f}" for v in df_año["Viajes"]],
-                    textposition="top center", textfont=dict(size=9, color=color),
-                    line=dict(color=color, width=2), marker=dict(size=6),
-                    hovertemplate=f"<b>{año} - %{{x}}</b><br>Viajes: %{{y:,.0f}}<extra></extra>",
-                ))
+            for ano in sorted(df_viajes_trend["ANO"].unique()):
+                df_ano = df_viajes_trend[df_viajes_trend["ANO"] == ano]
+                color = YEAR_COLORS.get(str(ano), COLORS["violet"])
+                fig_viajes.add_trace(
+                    go.Scatter(
+                        x=df_ano["Mes_Label"],
+                        y=df_ano["Viajes"],
+                        name=str(ano),
+                        mode="lines+markers+text",
+                        text=[
+                            "{:,.0f}".format(v) for v in df_ano["Viajes"]
+                        ],
+                        textposition="top center",
+                        textfont=dict(size=9, color=color),
+                        line=dict(color=color, width=2),
+                        marker=dict(size=6),
+                        hovertemplate=(
+                            "<b>{} - %{{x}}</b><br>"
+                            "Viajes: %{{y:,.0f}}<extra></extra>".format(ano)
+                        ),
+                    )
+                )
             chart_layout(fig_viajes, "Cantidad de viajes", height=420)
-            fig_viajes.update_layout(xaxis=dict(categoryorder="array",
-                                                 categoryarray=list(MESES_NOMBRE.values())))
+            fig_viajes.update_layout(
+                xaxis=dict(
+                    categoryorder="array",
+                    categoryarray=list(MESES_NOMBRE.values()),
+                )
+            )
             st.plotly_chart(fig_viajes, width="stretch")
 
         st.divider()
 
-        # ── Fila 2: Mercancía + Naturaleza + Config ──────────────────────────
+        # -- Fila 2: Mercancia + Naturaleza + Config --
         col_a, col_b, col_c = st.columns(3)
 
         with col_a:
-            df_merc = df_f.groupby("MERCANCIA", as_index=False, observed=True)["TONELADAS"].sum()
-            df_merc = df_merc.nlargest(10, "TONELADAS")
-            fig_merc = px.bar(df_merc.sort_values("TONELADAS"), y="MERCANCIA", x="TONELADAS",
-                              orientation="h", color_discrete_sequence=[COLORS["blue"]])
-            fig_merc.update_traces(marker=dict(cornerradius=4),
-                                    hovertemplate="<b>%{y}</b><br>Toneladas: %{x:,.0f}<extra></extra>")
-            chart_layout(fig_merc, "Toneladas totales por Mercancía", height=380)
-            st.plotly_chart(fig_merc, width="stretch")
+            if not df_mf.empty:
+                df_merc_chart = df_mf.groupby(
+                    "MERCANCIA", as_index=False, observed=True,
+                )["TONELADAS"].sum()
+                df_merc_chart = df_merc_chart.nlargest(10, "TONELADAS")
+                fig_merc = px.bar(
+                    df_merc_chart.sort_values("TONELADAS"),
+                    y="MERCANCIA", x="TONELADAS", orientation="h",
+                    color_discrete_sequence=[COLORS["blue"]],
+                )
+                fig_merc.update_traces(
+                    marker=dict(cornerradius=4),
+                    hovertemplate=(
+                        "<b>%{y}</b><br>Toneladas: %{x:,.0f}<extra></extra>"
+                    ),
+                )
+                chart_layout(
+                    fig_merc, "Toneladas totales por Mercancia", height=380
+                )
+                st.plotly_chart(fig_merc, width="stretch")
+            else:
+                st.info("Sin datos de mercancia para los filtros seleccionados.")
 
         with col_b:
-            df_nat = df_f.groupby("NATURALEZACARGA", as_index=False, observed=True)["VIAJESTOTALES"].sum()
+            df_nat = df_f.groupby(
+                "NATURALEZACARGA", as_index=False, observed=True,
+            )["VIAJESTOTALES"].sum()
             df_nat = df_nat.sort_values("VIAJESTOTALES", ascending=False)
-            fig_nat = px.pie(df_nat, names="NATURALEZACARGA", values="VIAJESTOTALES",
-                             color_discrete_sequence=CAT_COLORS, hole=0.4)
-            fig_nat.update_traces(textposition="inside", textinfo="percent+label",
-                                  hovertemplate="<b>%{label}</b><br>Viajes: %{value:,.0f}<br>%{percent}<extra></extra>",
-                                  marker=dict(line=dict(color=SURFACE, width=2)))
+            fig_nat = px.pie(
+                df_nat, names="NATURALEZACARGA", values="VIAJESTOTALES",
+                color_discrete_sequence=CAT_COLORS, hole=0.4,
+            )
+            fig_nat.update_traces(
+                textposition="inside", textinfo="percent+label",
+                hovertemplate=(
+                    "<b>%{label}</b><br>Viajes: %{value:,.0f}"
+                    "<br>%{percent}<extra></extra>"
+                ),
+                marker=dict(line=dict(color=SURFACE, width=2)),
+            )
             chart_layout(fig_nat, "Naturaleza de la carga", height=380)
             st.plotly_chart(fig_nat, width="stretch")
 
         with col_c:
-            df_cfg = df_f.groupby("COD_CONFIG_VEHICULO", as_index=False, observed=True)["VIAJESTOTALES"].sum()
+            df_cfg = df_f.groupby(
+                "COD_CONFIG_VEHICULO", as_index=False, observed=True,
+            )["VIAJESTOTALES"].sum()
             df_cfg = df_cfg.nlargest(8, "VIAJESTOTALES")
-            fig_cfg = px.pie(df_cfg, names="COD_CONFIG_VEHICULO", values="VIAJESTOTALES",
-                             color_discrete_sequence=CAT_COLORS, hole=0.4)
-            fig_cfg.update_traces(textposition="inside", textinfo="percent+label",
-                                  hovertemplate="<b>%{label}</b><br>Viajes: %{value:,.0f}<br>%{percent}<extra></extra>",
-                                  marker=dict(line=dict(color=SURFACE, width=2)))
-            chart_layout(fig_cfg, "Configuración vehículo", height=380)
+            fig_cfg = px.pie(
+                df_cfg, names="COD_CONFIG_VEHICULO", values="VIAJESTOTALES",
+                color_discrete_sequence=CAT_COLORS, hole=0.4,
+            )
+            fig_cfg.update_traces(
+                textposition="inside", textinfo="percent+label",
+                hovertemplate=(
+                    "<b>%{label}</b><br>Viajes: %{value:,.0f}"
+                    "<br>%{percent}<extra></extra>"
+                ),
+                marker=dict(line=dict(color=SURFACE, width=2)),
+            )
+            chart_layout(fig_cfg, "Configuracion vehiculo", height=380)
             st.plotly_chart(fig_cfg, width="stretch")
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# PÁGINA 3: COMPARATIVO FLETES
-# ══════════════════════════════════════════════════════════════════════════════
+# ======================================================================
+# PAGINA 3: COMPARATIVO FLETES
+# ======================================================================
 elif pagina == "💰 Comparativo FP y FM":
     st.title("Comparativo de Fletes")
-    st.caption("Flete Mercado (Estadísticas RNDC) · Nuestro Flete (sin cargue ni descargue) · Tarifa SICETAC")
+    st.caption(
+        "Flete Mercado (Estadisticas RNDC) - Nuestro Flete (sin cargue ni descargue) - Tarifa SICETAC"
+    )
 
-    has_fm = not df_stats.empty
+    has_fm = not df_muni.empty
     has_fp = not df_costos.empty and "COD_MUNI_ORIG" in df_costos.columns
     has_sic = not df_sicetac.empty
 
     if not has_fm and not has_fp and not has_sic:
-        st.warning("No se encontraron datos para la comparación.")
+        st.warning("No se encontraron datos para la comparacion.")
     else:
-        # ── Construir mapeo DANE → nombre de municipio (vectorizado) ────────
+        # -- Construir mapeo DANE -> nombre de municipio --
         dane_to_name_orig = {}
         dane_to_name_dest = {}
         if has_fm:
-            _o = df_stats[["CODMUNICIPIOORIGEN", "MUNICIPIOORIGEN"]].drop_duplicates()
+            _o = df_muni[
+                ["CODMUNICIPIOORIGEN", "MUNICIPIOORIGEN"]
+            ].drop_duplicates()
             _o = _o.dropna(subset=["CODMUNICIPIOORIGEN", "MUNICIPIOORIGEN"])
-            _o_codes = pd.to_numeric(_o["CODMUNICIPIOORIGEN"], errors="coerce").fillna(0)
+            _o_codes = pd.to_numeric(
+                _o["CODMUNICIPIOORIGEN"], errors="coerce"
+            ).fillna(0)
             _o = _o[_o_codes > 0]
-            dane_to_name_orig = dict(zip(_o["CODMUNICIPIOORIGEN"].astype(int), _o["MUNICIPIOORIGEN"].astype(str)))
-            _d = df_stats[["CODMUNICIPIODESTINO", "MUNICIPIODESTINO"]].drop_duplicates()
+            dane_to_name_orig = dict(
+                zip(
+                    _o["CODMUNICIPIOORIGEN"].astype(int),
+                    _o["MUNICIPIOORIGEN"].astype(str),
+                )
+            )
+            _d = df_muni[
+                ["CODMUNICIPIODESTINO", "MUNICIPIODESTINO"]
+            ].drop_duplicates()
             _d = _d.dropna(subset=["CODMUNICIPIODESTINO", "MUNICIPIODESTINO"])
-            _d_codes = pd.to_numeric(_d["CODMUNICIPIODESTINO"], errors="coerce").fillna(0)
+            _d_codes = pd.to_numeric(
+                _d["CODMUNICIPIODESTINO"], errors="coerce"
+            ).fillna(0)
             _d = _d[_d_codes > 0]
-            dane_to_name_dest = dict(zip(_d["CODMUNICIPIODESTINO"].astype(int), _d["MUNICIPIODESTINO"].astype(str)))
+            dane_to_name_dest = dict(
+                zip(
+                    _d["CODMUNICIPIODESTINO"].astype(int),
+                    _d["MUNICIPIODESTINO"].astype(str),
+                )
+            )
             del _o, _d
         if has_sic:
             _o = df_sicetac[["ORIGEN", "NOMORIGEN"]].drop_duplicates()
             _o = _o.dropna(subset=["ORIGEN", "NOMORIGEN"])
-            _o = _o[pd.to_numeric(_o["ORIGEN"], errors="coerce").fillna(0) > 0]
-            for code, name in zip(_o["ORIGEN"].astype(int), _o["NOMORIGEN"].astype(str)):
+            _o = _o[
+                pd.to_numeric(_o["ORIGEN"], errors="coerce").fillna(0) > 0
+            ]
+            for code, name in zip(
+                _o["ORIGEN"].astype(int), _o["NOMORIGEN"].astype(str)
+            ):
                 dane_to_name_orig.setdefault(code, name)
             _d = df_sicetac[["DESTINO", "NOMDESTINO"]].drop_duplicates()
             _d = _d.dropna(subset=["DESTINO", "NOMDESTINO"])
-            _d = _d[pd.to_numeric(_d["DESTINO"], errors="coerce").fillna(0) > 0]
-            for code, name in zip(_d["DESTINO"].astype(int), _d["NOMDESTINO"].astype(str)):
+            _d = _d[
+                pd.to_numeric(_d["DESTINO"], errors="coerce").fillna(0) > 0
+            ]
+            for code, name in zip(
+                _d["DESTINO"].astype(int), _d["NOMDESTINO"].astype(str)
+            ):
                 dane_to_name_dest.setdefault(code, name)
             del _o, _d
 
-        # Combinar en un solo diccionario code → name
         dane_to_name = {**dane_to_name_orig, **dane_to_name_dest}
-        # Inverso: name → code (para lookup desde el selectbox)
         name_to_dane_orig = {v: k for k, v in dane_to_name_orig.items()}
         name_to_dane_dest = {v: k for k, v in dane_to_name_dest.items()}
 
-        # ── Filtros de configuración, mercancía y naturaleza ────────────────
+        # -- Filtros de configuracion, mercancia y naturaleza --
         col_fc1, col_fc2, col_fc3 = st.columns(3)
 
         with col_fc1:
             if has_fm:
-                configs_comp = sorted(df_stats["COD_CONFIG_VEHICULO"].dropna().unique().tolist())
+                configs_comp = sorted(
+                    df_muni["COD_CONFIG_VEHICULO"].dropna().unique().tolist()
+                )
                 configs_comp = [c for c in configs_comp if c.strip()]
-                default_idx = configs_comp.index("3S3") + 1 if "3S3" in configs_comp else 0
+                default_idx = (
+                    configs_comp.index("3S3") + 1
+                    if "3S3" in configs_comp
+                    else 0
+                )
             else:
                 configs_comp = []
                 default_idx = 0
             config_comp_sel = st.selectbox(
-                "Configuración", ["Todos"] + configs_comp,
-                index=default_idx, key="comp_config"
+                "Configuracion",
+                ["Todos"] + configs_comp,
+                index=default_idx,
+                key="comp_config",
             )
 
         with col_fc2:
-            if has_fm:
-                mercancias_comp = sorted(df_stats["MERCANCIA"].dropna().unique().tolist())
-            else:
-                mercancias_comp = []
-            mercancia_comp_sel = st.selectbox(
-                "Mercancía", ["Todos"] + mercancias_comp, key="comp_merc"
-            )
+            # Mercancia no se usa para filtrar en page 3 (no esta en MUNI)
+            st.text("")  # placeholder
 
         with col_fc3:
             if has_fm:
-                nat_comp_options = sorted(df_stats["NATURALEZACARGA"].dropna().unique().tolist())
-                nat_normal = [n for n in nat_comp_options if "NORMAL" in n.upper()]
-                default_nat_idx = nat_comp_options.index(nat_normal[0]) + 1 if nat_normal else 0
+                nat_comp_options = sorted(
+                    df_muni["NATURALEZACARGA"].dropna().unique().tolist()
+                )
+                nat_normal = [
+                    n for n in nat_comp_options if "NORMAL" in n.upper()
+                ]
+                default_nat_idx = (
+                    nat_comp_options.index(nat_normal[0]) + 1
+                    if nat_normal
+                    else 0
+                )
             else:
                 nat_comp_options = []
                 default_nat_idx = 0
             nat_comp_sel = st.selectbox(
-                "Naturaleza de la carga", ["Todos"] + nat_comp_options,
-                index=default_nat_idx, key="comp_nat"
+                "Naturaleza de la carga",
+                ["Todos"] + nat_comp_options,
+                index=default_nat_idx,
+                key="comp_nat",
             )
 
-        # ── Aplicar filtros base a Estadísticas ─────────────────────────────
+        # -- Aplicar filtros base --
         if has_fm:
-            df_fm_base = df_stats.copy()
+            df_fm_base = df_muni.copy()
             if config_comp_sel != "Todos":
-                df_fm_base = df_fm_base[df_fm_base["COD_CONFIG_VEHICULO"] == config_comp_sel]
-            if mercancia_comp_sel != "Todos":
-                df_fm_base = df_fm_base[df_fm_base["MERCANCIA"] == mercancia_comp_sel]
+                df_fm_base = df_fm_base[
+                    df_fm_base["COD_CONFIG_VEHICULO"] == config_comp_sel
+                ]
             if nat_comp_sel != "Todos":
-                df_fm_base = df_fm_base[df_fm_base["NATURALEZACARGA"] == nat_comp_sel]
+                df_fm_base = df_fm_base[
+                    df_fm_base["NATURALEZACARGA"] == nat_comp_sel
+                ]
         else:
             df_fm_base = pd.DataFrame()
 
-        # SICETAC: filtrar por config seleccionada
         if has_sic:
             df_sic_base = df_sicetac.copy()
             if config_comp_sel != "Todos":
-                df_sic_base = df_sic_base[df_sic_base["CONFIGURACION"] == config_comp_sel]
+                df_sic_base = df_sic_base[
+                    df_sic_base["CONFIGURACION"] == config_comp_sel
+                ]
         else:
             df_sic_base = pd.DataFrame()
 
-        # FP: filtrar por config y naturaleza seleccionada
         if has_fp:
             df_fp_base = df_costos.copy()
-            if config_comp_sel != "Todos" and "CONFIG_FP" in df_fp_base.columns:
-                df_fp_base = df_fp_base[df_fp_base["CONFIG_FP"] == config_comp_sel]
-            if nat_comp_sel != "Todos" and "NATURALEZA_FP" in df_fp_base.columns:
-                # Normalizar: FP tiene "Normal", stats tiene "Carga Normal"
-                # Verificar si alguno contiene al otro (en cualquier dirección)
-                nat_fp_upper = df_fp_base["NATURALEZA_FP"].str.upper().str.strip()
+            if (
+                config_comp_sel != "Todos"
+                and "CONFIG_FP" in df_fp_base.columns
+            ):
+                df_fp_base = df_fp_base[
+                    df_fp_base["CONFIG_FP"] == config_comp_sel
+                ]
+            if (
+                nat_comp_sel != "Todos"
+                and "NATURALEZA_FP" in df_fp_base.columns
+            ):
+                nat_fp_upper = (
+                    df_fp_base["NATURALEZA_FP"].str.upper().str.strip()
+                )
                 nat_sel_upper = nat_comp_sel.upper().strip()
                 df_fp_base = df_fp_base[
-                    nat_fp_upper.apply(lambda x: x in nat_sel_upper or nat_sel_upper in x if pd.notna(x) else False)
+                    nat_fp_upper.apply(
+                        lambda x: x in nat_sel_upper or nat_sel_upper in x
+                        if pd.notna(x)
+                        else False
+                    )
                 ]
         else:
             df_fp_base = pd.DataFrame()
 
-        # ── Construir listas de municipios para filtros (por nombre) ─────────
+        # -- Construir listas de municipios --
         muni_orig_names = set()
         muni_dest_names = set()
 
         if not df_fm_base.empty:
-            muni_orig_names.update(df_fm_base["MUNICIPIOORIGEN"].dropna().unique())
-            muni_dest_names.update(df_fm_base["MUNICIPIODESTINO"].dropna().unique())
+            muni_orig_names.update(
+                df_fm_base["MUNICIPIOORIGEN"].dropna().unique()
+            )
+            muni_dest_names.update(
+                df_fm_base["MUNICIPIODESTINO"].dropna().unique()
+            )
         if not df_sic_base.empty:
-            muni_orig_names.update(df_sic_base["NOMORIGEN"].dropna().unique())
-            muni_dest_names.update(df_sic_base["NOMDESTINO"].dropna().unique())
+            muni_orig_names.update(
+                df_sic_base["NOMORIGEN"].dropna().unique()
+            )
+            muni_dest_names.update(
+                df_sic_base["NOMDESTINO"].dropna().unique()
+            )
         if not df_fp_base.empty:
-            # Para FP, convertir DANE code → nombre usando el diccionario
             for code in df_fp_base["COD_MUNI_ORIG"].dropna().unique():
                 c = int(code)
                 if c in dane_to_name:
@@ -971,29 +1391,42 @@ elif pagina == "💰 Comparativo FP y FM":
                 if c in dane_to_name:
                     muni_dest_names.add(dane_to_name[c])
 
-        # ── Filtros de municipio ─────────────────────────────────────────────
+        # -- Filtros de municipio --
         col_f1, col_f2 = st.columns(2)
         with col_f1:
             muni_orig_sel = st.selectbox(
-                "Municipio origen", ["Todos"] + sorted(muni_orig_names), key="comp_orig"
+                "Municipio origen",
+                ["Todos"] + sorted(muni_orig_names),
+                key="comp_orig",
             )
         with col_f2:
-            # Filtrar destinos según origen seleccionado
             if muni_orig_sel != "Todos":
                 dest_names = set()
                 dane_orig = name_to_dane_orig.get(muni_orig_sel, 0)
                 if not df_fm_base.empty:
                     dest_names.update(
-                        df_fm_base[df_fm_base["MUNICIPIOORIGEN"] == muni_orig_sel]["MUNICIPIODESTINO"]
-                        .dropna().unique()
+                        df_fm_base[
+                            df_fm_base["MUNICIPIOORIGEN"] == muni_orig_sel
+                        ]["MUNICIPIODESTINO"]
+                        .dropna()
+                        .unique()
                     )
                 if not df_sic_base.empty:
                     dest_names.update(
-                        df_sic_base[df_sic_base["NOMORIGEN"] == muni_orig_sel]["NOMDESTINO"]
-                        .dropna().unique()
+                        df_sic_base[
+                            df_sic_base["NOMORIGEN"] == muni_orig_sel
+                        ]["NOMDESTINO"]
+                        .dropna()
+                        .unique()
                     )
                 if not df_fp_base.empty and dane_orig > 0:
-                    for code in df_fp_base[df_fp_base["COD_MUNI_ORIG"] == dane_orig]["COD_MUNI_DEST"].dropna().unique():
+                    for code in (
+                        df_fp_base[df_fp_base["COD_MUNI_ORIG"] == dane_orig][
+                            "COD_MUNI_DEST"
+                        ]
+                        .dropna()
+                        .unique()
+                    ):
                         c = int(code)
                         if c in dane_to_name:
                             dest_names.add(dane_to_name[c])
@@ -1002,16 +1435,25 @@ elif pagina == "💰 Comparativo FP y FM":
                 muni_dest_options_comp = sorted(muni_dest_names)
 
             muni_dest_sel = st.selectbox(
-                "Municipio destino", ["Todos"] + muni_dest_options_comp, key="comp_dest"
+                "Municipio destino",
+                ["Todos"] + muni_dest_options_comp,
+                key="comp_dest",
             )
 
         st.divider()
 
-        # Resolver DANE codes para los municipios seleccionados
-        dane_orig_sel = name_to_dane_orig.get(muni_orig_sel, 0) if muni_orig_sel != "Todos" else 0
-        dane_dest_sel = name_to_dane_dest.get(muni_dest_sel, 0) if muni_dest_sel != "Todos" else 0
+        dane_orig_sel = (
+            name_to_dane_orig.get(muni_orig_sel, 0)
+            if muni_orig_sel != "Todos"
+            else 0
+        )
+        dane_dest_sel = (
+            name_to_dane_dest.get(muni_dest_sel, 0)
+            if muni_dest_sel != "Todos"
+            else 0
+        )
 
-        # ── Calcular Flete Mercado (Estadísticas RNDC) ───────────────────────
+        # -- Calcular Flete Mercado --
         if not df_fm_base.empty:
             df_fm = df_fm_base.copy()
             if muni_orig_sel != "Todos":
@@ -1020,18 +1462,25 @@ elif pagina == "💰 Comparativo FP y FM":
                 df_fm = df_fm[df_fm["MUNICIPIODESTINO"] == muni_dest_sel]
 
             if not df_fm.empty:
-                fm_agg = df_fm.groupby("MES", as_index=False, observed=True).agg(
+                fm_agg = df_fm.groupby(
+                    "MES", as_index=False, observed=True,
+                ).agg(
                     VALOR=("VALORESPAGADOS", "sum"),
                     VIAJES_CV=("VIAJES_CON_VALOR", "sum"),
                 )
-                fm_agg["Flete Mercado"] = fm_agg["VALOR"] / fm_agg["VIAJES_CV"].replace(0, 1)
+                fm_agg["Flete Mercado"] = (
+                    fm_agg["VALOR"] / fm_agg["VIAJES_CV"].replace(0, 1)
+                )
             else:
                 fm_agg = pd.DataFrame()
         else:
             fm_agg = pd.DataFrame()
 
-        # ── Calcular Nuestro Flete (FP sin cargue ni descargue) ──────────────
-        if not df_fp_base.empty and "Flete_sin_CyD" in df_fp_base.columns:
+        # -- Calcular Nuestro Flete (FP) --
+        if (
+            not df_fp_base.empty
+            and "Flete_sin_CyD" in df_fp_base.columns
+        ):
             df_fp = df_fp_base.copy()
             if dane_orig_sel > 0:
                 df_fp = df_fp[df_fp["COD_MUNI_ORIG"] == dane_orig_sel]
@@ -1048,33 +1497,44 @@ elif pagina == "💰 Comparativo FP y FM":
         else:
             fp_agg = pd.DataFrame()
 
-        # ── Calcular Promedio SICETAC ────────────────────────────────────────
+        # -- Calcular Promedio SICETAC --
         if not df_sic_base.empty:
             df_sic = df_sic_base.copy()
             if muni_orig_sel != "Todos":
-                # Filtrar por nombre O por DANE code
                 if dane_orig_sel > 0:
-                    df_sic = df_sic[(df_sic["NOMORIGEN"] == muni_orig_sel) | (df_sic["ORIGEN"] == dane_orig_sel)]
+                    df_sic = df_sic[
+                        (df_sic["NOMORIGEN"] == muni_orig_sel)
+                        | (df_sic["ORIGEN"] == dane_orig_sel)
+                    ]
                 else:
                     df_sic = df_sic[df_sic["NOMORIGEN"] == muni_orig_sel]
             if muni_dest_sel != "Todos":
                 if dane_dest_sel > 0:
-                    df_sic = df_sic[(df_sic["NOMDESTINO"] == muni_dest_sel) | (df_sic["DESTINO"] == dane_dest_sel)]
+                    df_sic = df_sic[
+                        (df_sic["NOMDESTINO"] == muni_dest_sel)
+                        | (df_sic["DESTINO"] == dane_dest_sel)
+                    ]
                 else:
                     df_sic = df_sic[df_sic["NOMDESTINO"] == muni_dest_sel]
 
             if not df_sic.empty:
-                sic_agg = df_sic.groupby("PERIODO", as_index=False, observed=True).agg(
-                    VALOR_SUMA=("VALOR_SUMA", "sum"), CONTEO=("CONTEO", "sum"),
+                sic_agg = df_sic.groupby(
+                    "PERIODO", as_index=False, observed=True,
+                ).agg(
+                    VALOR_SUMA=("VALOR_SUMA", "sum"),
+                    CONTEO=("CONTEO", "sum"),
                 )
-                sic_agg["SICETAC"] = sic_agg["VALOR_SUMA"] / sic_agg["CONTEO"].replace(0, 1)
+                sic_agg["SICETAC"] = (
+                    sic_agg["VALOR_SUMA"]
+                    / sic_agg["CONTEO"].replace(0, 1)
+                )
                 sic_agg = sic_agg.rename(columns={"PERIODO": "MES"})
             else:
                 sic_agg = pd.DataFrame()
         else:
             sic_agg = pd.DataFrame()
 
-        # ── Construir tabla comparativa ──────────────────────────────────────
+        # -- Construir tabla comparativa --
         st.subheader("Comparativo de Fletes")
 
         all_periodos = set()
@@ -1086,62 +1546,88 @@ elif pagina == "💰 Comparativo FP y FM":
             all_periodos.update(sic_agg["MES"].unique())
 
         if not all_periodos:
-            st.info("No hay datos para la combinación de filtros seleccionada. Selecciona un municipio de origen y destino.")
+            st.info(
+                "No hay datos para la combinacion de filtros seleccionada. "
+                "Selecciona un municipio de origen y destino."
+            )
         else:
             tabla = pd.DataFrame({"MES": sorted(all_periodos)})
 
             if not fm_agg.empty:
-                tabla = tabla.merge(fm_agg[["MES", "Flete Mercado"]], on="MES", how="left")
+                tabla = tabla.merge(
+                    fm_agg[["MES", "Flete Mercado"]], on="MES", how="left"
+                )
             else:
                 tabla["Flete Mercado"] = float("nan")
 
             if not fp_agg.empty:
-                tabla = tabla.merge(fp_agg[["MES", "Nuestro Flete"]], on="MES", how="left")
+                tabla = tabla.merge(
+                    fp_agg[["MES", "Nuestro Flete"]], on="MES", how="left"
+                )
             else:
                 tabla["Nuestro Flete"] = float("nan")
 
             if not sic_agg.empty:
-                tabla = tabla.merge(sic_agg[["MES", "SICETAC"]], on="MES", how="left")
+                tabla = tabla.merge(
+                    sic_agg[["MES", "SICETAC"]], on="MES", how="left"
+                )
             else:
                 tabla["SICETAC"] = float("nan")
 
             tabla = tabla.sort_values("MES")
 
             tabla["Periodo"] = tabla["MES"].apply(
-                lambda x: f"{MESES_NOMBRE.get(int(str(x)[4:6]), str(x)[4:6])} {str(x)[:4]}"
-                if pd.notna(x) and len(str(x)) >= 6 else str(x)
+                lambda x: "{} {}".format(
+                    MESES_NOMBRE.get(int(str(x)[4:6]), str(x)[4:6]),
+                    str(x)[:4],
+                )
+                if pd.notna(x) and len(str(x)) >= 6
+                else str(x)
             )
 
             ruta_label = ""
             if muni_orig_sel != "Todos" and muni_dest_sel != "Todos":
-                ruta_label = f"**Ruta:** {muni_orig_sel} → {muni_dest_sel}"
+                ruta_label = "**Ruta:** {} -> {}".format(
+                    muni_orig_sel, muni_dest_sel
+                )
             elif muni_orig_sel != "Todos":
-                ruta_label = f"**Origen:** {muni_orig_sel}"
+                ruta_label = "**Origen:** {}".format(muni_orig_sel)
             elif muni_dest_sel != "Todos":
-                ruta_label = f"**Destino:** {muni_dest_sel}"
+                ruta_label = "**Destino:** {}".format(muni_dest_sel)
             if ruta_label:
                 st.markdown(ruta_label)
 
-            tabla_display = tabla[["Periodo", "Flete Mercado", "Nuestro Flete", "SICETAC"]].copy()
+            tabla_display = tabla[
+                ["Periodo", "Flete Mercado", "Nuestro Flete", "SICETAC"]
+            ].copy()
 
             total_dict = {"Periodo": "Promedio"}
             for col in ["Flete Mercado", "Nuestro Flete", "SICETAC"]:
                 vals = tabla_display[col].dropna()
                 total_dict[col] = vals.mean() if len(vals) > 0 else None
-            tabla_con_total = pd.concat([tabla_display, pd.DataFrame([total_dict])], ignore_index=True)
+            tabla_con_total = pd.concat(
+                [tabla_display, pd.DataFrame([total_dict])],
+                ignore_index=True,
+            )
 
-            format_dict = {c: "${:,.0f}" for c in ["Flete Mercado", "Nuestro Flete", "SICETAC"]}
+            format_dict = {
+                c: "${:,.0f}"
+                for c in ["Flete Mercado", "Nuestro Flete", "SICETAC"]
+            }
 
             col_tabla, col_chart = st.columns([1, 1])
 
             with col_tabla:
                 st.dataframe(
-                    tabla_con_total.style.format(format_dict, na_rep="-").apply(
+                    tabla_con_total.style.format(format_dict, na_rep="-")
+                    .apply(
                         lambda row: ["font-weight: bold"] * len(row)
-                        if row["Periodo"] == "Promedio" else [""] * len(row),
+                        if row["Periodo"] == "Promedio"
+                        else [""] * len(row),
                         axis=1,
                     ),
-                    width="stretch", hide_index=True,
+                    width="stretch",
+                    hide_index=True,
                     height=min(500, (len(tabla_con_total) + 1) * 38),
                 )
 
@@ -1155,66 +1641,107 @@ elif pagina == "💰 Comparativo FP y FM":
                 for col, color, name in series_config:
                     if col in tabla.columns and tabla[col].notna().any():
                         df_line = tabla[tabla[col].notna()]
-                        fig_comp.add_trace(go.Scatter(
-                            x=df_line["Periodo"], y=df_line[col],
-                            name=name, mode="lines+markers+text",
-                            text=[f"${v:,.0f}" if pd.notna(v) else "" for v in df_line[col]],
-                            textposition="top center", textfont=dict(size=9, color=color),
-                            line=dict(color=color, width=2.5), marker=dict(size=8),
-                            hovertemplate=f"<b>%{{x}}</b><br>{name}: $%{{y:,.0f}}<extra></extra>",
-                        ))
-                chart_layout(fig_comp, "Comparativo de Fletes por Mes", height=450)
+                        fig_comp.add_trace(
+                            go.Scatter(
+                                x=df_line["Periodo"],
+                                y=df_line[col],
+                                name=name,
+                                mode="lines+markers+text",
+                                text=[
+                                    "${:,.0f}".format(v)
+                                    if pd.notna(v)
+                                    else ""
+                                    for v in df_line[col]
+                                ],
+                                textposition="top center",
+                                textfont=dict(size=9, color=color),
+                                line=dict(color=color, width=2.5),
+                                marker=dict(size=8),
+                                hovertemplate=(
+                                    "<b>%{{x}}</b><br>{}: $%{{y:,.0f}}"
+                                    "<extra></extra>".format(name)
+                                ),
+                            )
+                        )
+                chart_layout(
+                    fig_comp, "Comparativo de Fletes por Mes", height=450
+                )
                 st.plotly_chart(fig_comp, width="stretch")
 
         st.divider()
 
-        # ── Detalle de rutas con datos FP ────────────────────────────────────
+        # -- Detalle de rutas con datos FP --
         if has_fp and "Flete_sin_CyD" in df_costos.columns:
             with st.expander("Detalle Nuestro Flete por Ruta"):
-                df_fp_det = df_fp_base.copy() if not df_fp_base.empty else df_costos.copy()
+                df_fp_det = (
+                    df_fp_base.copy()
+                    if not df_fp_base.empty
+                    else df_costos.copy()
+                )
 
-                # Agregar nombres de municipio para mostrar en tabla
                 df_fp_det["Origen"] = df_fp_det["COD_MUNI_ORIG"].map(
-                    lambda c: dane_to_name.get(int(c), str(int(c))) if pd.notna(c) and c > 0 else "Desconocido"
+                    lambda c: dane_to_name.get(int(c), str(int(c)))
+                    if pd.notna(c) and c > 0
+                    else "Desconocido"
                 )
                 df_fp_det["Destino"] = df_fp_det["COD_MUNI_DEST"].map(
-                    lambda c: dane_to_name.get(int(c), str(int(c))) if pd.notna(c) and c > 0 else "Desconocido"
+                    lambda c: dane_to_name.get(int(c), str(int(c)))
+                    if pd.notna(c) and c > 0
+                    else "Desconocido"
                 )
 
                 col_d1, col_d2 = st.columns(2)
                 with col_d1:
-                    origenes_fp = ["Todos"] + sorted(df_fp_det["Origen"].dropna().unique().tolist())
-                    orig_fp_sel = st.selectbox("Municipio Origen FP", origenes_fp, key="fp_muni_orig")
+                    origenes_fp = ["Todos"] + sorted(
+                        df_fp_det["Origen"].dropna().unique().tolist()
+                    )
+                    orig_fp_sel = st.selectbox(
+                        "Municipio Origen FP", origenes_fp, key="fp_muni_orig"
+                    )
 
                 if orig_fp_sel != "Todos":
                     df_fp_det = df_fp_det[df_fp_det["Origen"] == orig_fp_sel]
 
                 col1, col2 = st.columns(2)
-                flete_sin_cyd_prom = df_fp_det["Flete_sin_CyD"].mean() if not df_fp_det.empty else 0
-                col1.metric("Rutas", f"{len(df_fp_det):,.0f}")
-                col2.metric("Flete Prom. sin CyD", f"${flete_sin_cyd_prom:,.0f}")
+                flete_sin_cyd_prom = (
+                    df_fp_det["Flete_sin_CyD"].mean()
+                    if not df_fp_det.empty
+                    else 0
+                )
+                col1.metric("Rutas", "{:,.0f}".format(len(df_fp_det)))
+                col2.metric(
+                    "Flete Prom. sin CyD",
+                    "${:,.0f}".format(flete_sin_cyd_prom),
+                )
 
                 if not df_fp_det.empty:
-                    df_rutas = df_fp_det.groupby(
-                        ["Origen", "Destino"], as_index=False
-                    ).agg(
-                        Rutas=("Flete_sin_CyD", "count"),
-                        **{"Flete sin CyD": ("Flete_sin_CyD", "mean")},
-                    ).sort_values("Flete sin CyD", ascending=False)
+                    df_rutas = (
+                        df_fp_det.groupby(
+                            ["Origen", "Destino"], as_index=False
+                        )
+                        .agg(
+                            Rutas=("Flete_sin_CyD", "count"),
+                            **{"Flete sin CyD": ("Flete_sin_CyD", "mean")},
+                        )
+                        .sort_values("Flete sin CyD", ascending=False)
+                    )
 
                     st.dataframe(
-                        df_rutas.style.format({
-                            "Rutas": "{:,.0f}",
-                            "Flete sin CyD": "${:,.0f}",
-                        }),
-                        width="stretch", hide_index=True,
+                        df_rutas.style.format(
+                            {
+                                "Rutas": "{:,.0f}",
+                                "Flete sin CyD": "${:,.0f}",
+                            }
+                        ),
+                        width="stretch",
+                        hide_index=True,
                         height=min(500, (len(df_rutas) + 1) * 38),
                     )
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# PÁGINA 4: TABLA CONSOLIDADA
-# ══════════════════════════════════════════════════════════════════════════════
+# ======================================================================
+# PAGINA 4: TABLA CONSOLIDADA
+# ======================================================================
 elif pagina == "📋 Tabla Consolidada":
     st.title("Tabla Consolidada")
 
@@ -1223,83 +1750,153 @@ elif pagina == "📋 Tabla Consolidada":
     else:
         col_f1, col_f2 = st.columns(2)
         with col_f1:
-            configs_tc = ["Todos"] + sorted(df_filtrado["CONFIG_VEHICULO"].dropna().unique().tolist())
-            config_tc_sel = st.selectbox("Configuración", configs_tc, key="tc_config")
+            configs_tc = ["Todos"] + sorted(
+                df_filtrado["CONFIG_VEHICULO"].dropna().unique().tolist()
+            )
+            config_tc_sel = st.selectbox(
+                "Configuracion", configs_tc, key="tc_config"
+            )
 
         df_tc = df_filtrado.copy()
         if config_tc_sel != "Todos":
             df_tc = df_tc[df_tc["CONFIG_VEHICULO"] == config_tc_sel]
 
-        df_consol = df_tc.groupby(["MES_NOMBRE", "PERIODO"], as_index=False, observed=True).agg(
-            Viajes=("VIAJESTOTALES", "sum"),
-            Viajes_con_valor=("VIAJES_CON_VALOR", "sum"),
-            Flete_pagado=("VALORESPAGADOS", "sum"),
-            Toneladas=("TONELADAS", "sum"),
-        ).sort_values("PERIODO")
+        df_consol = (
+            df_tc.groupby(
+                ["MES_NOMBRE", "PERIODO"], as_index=False, observed=True,
+            )
+            .agg(
+                Viajes=("VIAJESTOTALES", "sum"),
+                Viajes_con_valor=("VIAJES_CON_VALOR", "sum"),
+                Flete_pagado=("VALORESPAGADOS", "sum"),
+                Toneladas=("TONELADAS", "sum"),
+            )
+            .sort_values("PERIODO")
+        )
 
-        df_consol["Flete Promedio"] = (df_consol["Flete_pagado"] / df_consol["Viajes_con_valor"].replace(0, 1)).round(0)
+        df_consol["Flete Promedio"] = (
+            df_consol["Flete_pagado"]
+            / df_consol["Viajes_con_valor"].replace(0, 1)
+        ).round(0)
 
         col1, col2, col3, col4 = st.columns(4)
-        col1.metric("Total Viajes", f"{df_consol['Viajes'].sum():,.0f}")
-        col2.metric("Viajes con Valor", f"{df_consol['Viajes_con_valor'].sum():,.0f}")
-        col3.metric("Flete Pagado Total", f"${df_consol['Flete_pagado'].sum():,.0f}")
-        col4.metric("Toneladas Total", f"{df_consol['Toneladas'].sum():,.0f}")
+        col1.metric(
+            "Total Viajes", "{:,.0f}".format(df_consol["Viajes"].sum())
+        )
+        col2.metric(
+            "Viajes con Valor",
+            "{:,.0f}".format(df_consol["Viajes_con_valor"].sum()),
+        )
+        col3.metric(
+            "Flete Pagado Total",
+            "${:,.0f}".format(df_consol["Flete_pagado"].sum()),
+        )
+        col4.metric(
+            "Toneladas Total",
+            "{:,.0f}".format(df_consol["Toneladas"].sum()),
+        )
 
         st.divider()
 
-        df_display = df_consol[["MES_NOMBRE", "Viajes", "Viajes_con_valor", "Flete_pagado", "Toneladas"]].copy()
-        df_display.columns = ["Mes", "Viajes", "Viajes con Valor", "Flete Pagado", "Toneladas"]
+        df_display = df_consol[
+            ["MES_NOMBRE", "Viajes", "Viajes_con_valor", "Flete_pagado", "Toneladas"]
+        ].copy()
+        df_display.columns = [
+            "Mes", "Viajes", "Viajes con Valor", "Flete Pagado", "Toneladas",
+        ]
 
         st.dataframe(
-            df_display.style.format({
-                "Viajes": "{:,.0f}", "Viajes con Valor": "{:,.0f}",
-                "Flete Pagado": "${:,.0f}", "Toneladas": "{:,.0f}",
-            }),
-            width="stretch", height=400, hide_index=True,
+            df_display.style.format(
+                {
+                    "Viajes": "{:,.0f}",
+                    "Viajes con Valor": "{:,.0f}",
+                    "Flete Pagado": "${:,.0f}",
+                    "Toneladas": "{:,.0f}",
+                }
+            ),
+            width="stretch",
+            height=400,
+            hide_index=True,
         )
 
         fig_consol = go.Figure()
-        fig_consol.add_trace(go.Bar(
-            x=df_consol["MES_NOMBRE"], y=df_consol["Viajes"], name="Viajes",
-            marker=dict(color=COLORS["blue"], cornerradius=4),
-            hovertemplate="<b>%{x}</b><br>Viajes: %{y:,.0f}<extra></extra>",
-        ))
-        fig_consol.add_trace(go.Scatter(
-            x=df_consol["MES_NOMBRE"], y=df_consol["Toneladas"], name="Toneladas",
-            yaxis="y2", mode="lines+markers",
-            line=dict(color=COLORS["orange"], width=2), marker=dict(size=8),
-            hovertemplate="<b>%{x}</b><br>Toneladas: %{y:,.0f}<extra></extra>",
-        ))
-        fig_consol.update_layout(yaxis2=dict(
-            overlaying="y", side="right", gridcolor="rgba(0,0,0,0)",
-            tickfont=dict(color=COLORS["orange"]),
-        ))
+        fig_consol.add_trace(
+            go.Bar(
+                x=df_consol["MES_NOMBRE"],
+                y=df_consol["Viajes"],
+                name="Viajes",
+                marker=dict(color=COLORS["blue"], cornerradius=4),
+                hovertemplate=(
+                    "<b>%{x}</b><br>Viajes: %{y:,.0f}<extra></extra>"
+                ),
+            )
+        )
+        fig_consol.add_trace(
+            go.Scatter(
+                x=df_consol["MES_NOMBRE"],
+                y=df_consol["Toneladas"],
+                name="Toneladas",
+                yaxis="y2",
+                mode="lines+markers",
+                line=dict(color=COLORS["orange"], width=2),
+                marker=dict(size=8),
+                hovertemplate=(
+                    "<b>%{x}</b><br>Toneladas: %{y:,.0f}<extra></extra>"
+                ),
+            )
+        )
+        fig_consol.update_layout(
+            yaxis2=dict(
+                overlaying="y",
+                side="right",
+                gridcolor="rgba(0,0,0,0)",
+                tickfont=dict(color=COLORS["orange"]),
+            )
+        )
         chart_layout(fig_consol, "Viajes y Toneladas por Mes", height=420)
         st.plotly_chart(fig_consol, width="stretch")
 
 
-# ─── Footer ──────────────────────────────────────────────────────────────────
+# --- Footer ---
 st.sidebar.divider()
 st.sidebar.caption("Datos: RNDC - Ministerio de Transporte")
 st.sidebar.caption("Desarrollado para Edinsa")
 
-with st.sidebar.expander("🔧 Diagnóstico"):
+with st.sidebar.expander("Diagnostico"):
     data_dir = _get_data_dir()
-    st.write(f"**Carpeta data:** `{data_dir}`")
-    st.write(f"**Existe:** {os.path.isdir(data_dir)}")
+    st.write("**Carpeta data:** `{}`".format(data_dir))
+    st.write("**Existe:** {}".format(os.path.isdir(data_dir)))
     if os.path.isdir(data_dir):
         archivos = os.listdir(data_dir)
-        st.write(f"**Archivos encontrados:** {len(archivos)}")
+        st.write("**Archivos encontrados:** {}".format(len(archivos)))
         for a in sorted(archivos):
             size_kb = os.path.getsize(os.path.join(data_dir, a)) / 1024
-            st.write(f"- {a} ({size_kb:.0f} KB)")
+            st.write("- {} ({:.0f} KB)".format(a, size_kb))
     st.divider()
-    st.write(f"**Estadísticas:** {df_stats.shape[0]} filas (pre-agregado)")
-    st.write(f"**Ranking:** {df_ranking.shape[0]} filas")
-    st.write(f"**SICETAC:** {df_sicetac.shape[0]} filas (pre-agregado)")
-    st.write(f"**Costos FP:** {df_costos.shape[0]} filas")
+    st.write(
+        "**Core:** {} filas".format(
+            df_core.shape[0] if not df_core.empty else 0
+        )
+    )
+    st.write(
+        "**Merc:** {} filas".format(
+            df_merc.shape[0] if not df_merc.empty else 0
+        )
+    )
+    st.write(
+        "**Muni:** {} filas".format(
+            df_muni.shape[0] if not df_muni.empty else 0
+        )
+    )
+    st.write("**Ranking:** {} filas".format(df_ranking.shape[0]))
+    st.write(
+        "**SICETAC:** {} filas".format(
+            df_sicetac.shape[0] if not df_sicetac.empty else 0
+        )
+    )
+    st.write("**Costos FP:** {} filas".format(df_costos.shape[0]))
     if _load_log:
         st.divider()
         st.write("**Log de carga:**")
         for msg in _load_log:
-            st.write(f"- {msg}")
+            st.write("- {}".format(msg))
