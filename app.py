@@ -1,4 +1,4 @@
-" ""
+"""
 Tablero RNDC - Edinsa
 Dashboard interactivo para estadísticas de transporte RNDC
 (Versión optimizada para Streamlit Cloud — pre-agregación de datos)
