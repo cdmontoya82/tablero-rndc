@@ -1707,6 +1707,183 @@ elif pagina == "💰 Comparativo FP y FM":
 
         st.divider()
 
+        # -- Incremento SICETAC periodo a periodo --
+        if has_sic and not df_sicetac_filt.empty:
+            st.subheader("Incremento SICETAC mes a mes")
+            st.caption(
+                "Variacion porcentual del valor promedio SICETAC "
+                "respecto al periodo anterior (agregado general)"
+            )
+
+            # Agregar todo SICETAC filtrado por periodo
+            sic_trend = df_sicetac_filt.groupby(
+                "PERIODO", as_index=False, observed=True,
+            ).agg(
+                VALOR_SUMA=("VALOR_SUMA", "sum"),
+                CONTEO=("CONTEO", "sum"),
+            )
+            sic_trend["Tarifa_Prom"] = (
+                sic_trend["VALOR_SUMA"]
+                / sic_trend["CONTEO"].replace(0, 1)
+            )
+            sic_trend = sic_trend.sort_values("PERIODO").reset_index(drop=True)
+
+            # Calcular variacion vs periodo anterior
+            sic_trend["Tarifa_Ant"] = sic_trend["Tarifa_Prom"].shift(1)
+            sic_trend["Var_Abs"] = (
+                sic_trend["Tarifa_Prom"] - sic_trend["Tarifa_Ant"]
+            )
+            sic_trend["Var_Pct"] = (
+                sic_trend["Var_Abs"]
+                / sic_trend["Tarifa_Ant"].replace(0, float("nan"))
+                * 100
+            )
+
+            # Etiqueta legible del periodo
+            sic_trend["Periodo"] = sic_trend["PERIODO"].apply(
+                lambda x: "{} {}".format(
+                    MESES_NOMBRE.get(int(str(x)[4:6]), str(x)[4:6]),
+                    str(x)[:4],
+                )
+                if pd.notna(x) and len(str(x)) >= 6
+                else str(x)
+            )
+
+            # Tabla de incremento
+            sic_disp = sic_trend[
+                ["Periodo", "Tarifa_Prom", "Var_Abs", "Var_Pct"]
+            ].copy()
+            sic_disp = sic_disp.rename(columns={
+                "Tarifa_Prom": "Tarifa Promedio",
+                "Var_Abs": "Variacion $",
+                "Var_Pct": "Variacion %",
+            })
+
+            # Promedio de variacion (excluyendo el primer registro que es NaN)
+            prom_var_pct = sic_disp["Variacion %"].dropna().mean()
+            prom_var_abs = sic_disp["Variacion $"].dropna().mean()
+
+            # Fila de promedio
+            fila_prom = {
+                "Periodo": "Promedio",
+                "Tarifa Promedio": sic_disp["Tarifa Promedio"].mean(),
+                "Variacion $": prom_var_abs,
+                "Variacion %": prom_var_pct,
+            }
+            sic_con_prom = pd.concat(
+                [sic_disp, pd.DataFrame([fila_prom])],
+                ignore_index=True,
+            )
+
+            col_t_sic, col_g_sic = st.columns([1, 1])
+
+            with col_t_sic:
+                def _color_var(val):
+                    if pd.isna(val):
+                        return ""
+                    if val > 0:
+                        return "color: #e34948"
+                    elif val < 0:
+                        return "color: #1baf7a"
+                    return ""
+
+                styled = sic_con_prom.style.format(
+                    {
+                        "Tarifa Promedio": "${:,.0f}",
+                        "Variacion $": "${:+,.0f}",
+                        "Variacion %": "{:+.2f}%",
+                    },
+                    na_rep="-",
+                ).map(
+                    _color_var,
+                    subset=["Variacion $", "Variacion %"],
+                ).apply(
+                    lambda row: ["font-weight: bold"] * len(row)
+                    if row["Periodo"] == "Promedio"
+                    else [""] * len(row),
+                    axis=1,
+                )
+                st.dataframe(
+                    styled,
+                    width="stretch",
+                    hide_index=True,
+                    height=min(500, (len(sic_con_prom) + 1) * 38),
+                )
+
+            with col_g_sic:
+                # Grafico de barras con variacion %
+                sic_chart = sic_trend[sic_trend["Var_Pct"].notna()].copy()
+                if not sic_chart.empty:
+                    bar_colors = [
+                        COLORS["red"] if v > 0 else COLORS["aqua"]
+                        for v in sic_chart["Var_Pct"]
+                    ]
+                    fig_sic = go.Figure(
+                        go.Bar(
+                            x=sic_chart["Periodo"],
+                            y=sic_chart["Var_Pct"],
+                            marker=dict(
+                                color=bar_colors, cornerradius=4
+                            ),
+                            text=[
+                                "{:+.2f}%".format(v)
+                                for v in sic_chart["Var_Pct"]
+                            ],
+                            textposition="outside",
+                            textfont=dict(size=10),
+                            hovertemplate=(
+                                "<b>%{x}</b><br>"
+                                "Variacion: %{y:+.2f}%<extra></extra>"
+                            ),
+                        )
+                    )
+                    # Linea de promedio
+                    fig_sic.add_hline(
+                        y=prom_var_pct,
+                        line_dash="dash",
+                        line_color=COLORS["yellow"],
+                        line_width=2,
+                        annotation_text="Prom: {:+.2f}%".format(
+                            prom_var_pct
+                        ),
+                        annotation_position="top left",
+                        annotation_font_color=COLORS["yellow"],
+                    )
+                    chart_layout(
+                        fig_sic,
+                        "Variacion % SICETAC mes a mes",
+                        height=450,
+                    )
+                    fig_sic.update_layout(
+                        yaxis_title="Variacion %",
+                        yaxis_ticksuffix="%",
+                    )
+                    st.plotly_chart(fig_sic, width="stretch")
+                else:
+                    st.info("Se necesitan al menos 2 periodos para calcular la variacion.")
+
+            # KPI resumen
+            if pd.notna(prom_var_pct):
+                col_k1, col_k2, col_k3 = st.columns(3)
+                col_k1.metric(
+                    "Incremento promedio mensual",
+                    "{:+.2f}%".format(prom_var_pct),
+                )
+                col_k2.metric(
+                    "Variacion promedio $",
+                    "${:+,.0f}".format(prom_var_abs),
+                )
+                # Ultimo periodo
+                last = sic_trend.iloc[-1]
+                if pd.notna(last["Var_Pct"]):
+                    col_k3.metric(
+                        "Ultimo periodo ({})".format(last["Periodo"]),
+                        "${:,.0f}".format(last["Tarifa_Prom"]),
+                        "{:+.2f}%".format(last["Var_Pct"]),
+                    )
+
+        st.divider()
+
         # -- Detalle de rutas con datos FP --
         if has_fp and "Flete_sin_CyD" in df_costos_filt.columns:
             with st.expander("Detalle Nuestro Flete por Ruta"):
