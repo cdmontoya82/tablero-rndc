@@ -1709,14 +1709,22 @@ elif pagina == "💰 Comparativo FP y FM":
 
         # -- Incremento SICETAC periodo a periodo --
         if has_sic and not df_sicetac_filt.empty:
-            st.subheader("Incremento SICETAC mes a mes")
+            st.subheader("Incremento SICETAC mes a mes (3S3)")
             st.caption(
                 "Variacion porcentual del valor promedio SICETAC "
-                "respecto al periodo anterior (agregado general)"
+                "respecto al periodo anterior (configuracion 3S3)"
             )
 
-            # Agregar todo SICETAC filtrado por periodo
-            sic_trend = df_sicetac_filt.groupby(
+            # Filtrar solo configuracion 3S3
+            _sic_3s3 = df_sicetac_filt[
+                df_sicetac_filt["CONFIGURACION"].astype(str).str.strip() == "3S3"
+            ]
+            if _sic_3s3.empty:
+                st.info("No hay datos SICETAC para configuracion 3S3.")
+            _sic_src = _sic_3s3 if not _sic_3s3.empty else df_sicetac_filt
+
+            # Agregar SICETAC 3S3 por periodo
+            sic_trend = _sic_src.groupby(
                 "PERIODO", as_index=False, observed=True,
             ).agg(
                 VALOR_SUMA=("VALOR_SUMA", "sum"),
