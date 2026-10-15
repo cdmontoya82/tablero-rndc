@@ -417,6 +417,111 @@ def load_sicetac():
 
 
 @st.cache_data(ttl=3600)
+def load_sicetac_rutas_3s3():
+    # Carga SICETAC filtrado a 3S3 + ESTACAS + GENERAL, una fila por ruta
+    # por periodo. Columnas: PERIODO, ORIGEN, NOMORIGEN, DESTINO, NOMDESTINO,
+    # VALOR, DISTANCIA, VALORHORA.
+    # En los archivos SICETAC ya viene 1 fila por combinacion
+    # ruta+config+unidad+tipocarga, asi que al filtrar por
+    # 3S3/ESTACAS/GENERAL queda ~8700 filas por periodo (~liviano).
+    data_dir = _get_data_dir()
+    frames = []
+
+    all_files = sorted(glob.glob(os.path.join(data_dir, "Sicetac_*.parquet")))
+    all_files += sorted(glob.glob(os.path.join(data_dir, "Sicetac_*.xlsx")))
+
+    for f in all_files:
+        try:
+            if f.endswith(".parquet"):
+                raw = pd.read_parquet(f, columns=SICETAC_COLUMNS)
+            else:
+                raw = pd.read_excel(
+                    f, usecols=lambda c: c in SICETAC_COLUMNS
+                )
+
+            raw["PERIODO"] = raw["PERIODO"].astype(str).str[:6]
+            for dcol in ["ORIGEN", "DESTINO"]:
+                if dcol in raw.columns:
+                    raw[dcol] = pd.to_numeric(
+                        raw[dcol], errors="coerce"
+                    ).fillna(0).astype("int64")
+
+            for _oc in ["NOMBREUNIDADTRANSPORTE", "NOMBRETIPOCARGA"]:
+                if _oc not in raw.columns:
+                    raw[_oc] = ""
+            if "VALORHORA" not in raw.columns:
+                raw["VALORHORA"] = 0.0
+            raw["VALORHORA"] = pd.to_numeric(
+                raw["VALORHORA"], errors="coerce"
+            ).fillna(0)
+
+            _cfg = raw["CONFIGURACION"].astype(str).str.strip()
+            _uni = (
+                raw["NOMBREUNIDADTRANSPORTE"]
+                .astype(str).str.strip().str.upper()
+            )
+            _tip = (
+                raw["NOMBRETIPOCARGA"]
+                .astype(str).str.strip().str.upper()
+            )
+            mask = (
+                (_cfg == "3S3")
+                & (_uni == "ESTACAS")
+                & (_tip == "GENERAL")
+            )
+            sub = raw.loc[
+                mask,
+                ["PERIODO", "ORIGEN", "NOMORIGEN", "DESTINO",
+                 "NOMDESTINO", "VALOR", "DISTANCIA", "VALORHORA"],
+            ].copy()
+
+            if not sub.empty:
+                sub["VALOR"] = pd.to_numeric(
+                    sub["VALOR"], errors="coerce"
+                ).fillna(0)
+                sub["DISTANCIA"] = pd.to_numeric(
+                    sub["DISTANCIA"], errors="coerce"
+                ).fillna(0)
+                frames.append(sub)
+
+            del raw, sub
+            gc.collect()
+
+        except Exception as e:
+            _load_log.append(
+                "ERROR sicetac_rutas {}: {}".format(
+                    os.path.basename(f), e
+                )
+            )
+
+    if not frames:
+        return pd.DataFrame()
+
+    df = pd.concat(frames, ignore_index=True)
+    del frames
+    gc.collect()
+
+    # Si hay duplicados (mismo periodo+ruta), promediar
+    df = df.groupby(
+        ["PERIODO", "ORIGEN", "NOMORIGEN", "DESTINO", "NOMDESTINO"],
+        as_index=False, observed=True,
+    ).agg(
+        VALOR=("VALOR", "mean"),
+        DISTANCIA=("DISTANCIA", "mean"),
+        VALORHORA=("VALORHORA", "mean"),
+    )
+
+    _to_category(df, ["PERIODO", "NOMORIGEN", "NOMDESTINO"])
+
+    _load_log.append(
+        "SICETAC rutas 3S3: {} filas, {} periodos".format(
+            len(df), df["PERIODO"].nunique()
+        )
+    )
+    return df
+
+
+@st.cache_data(ttl=3600)
 def load_costos_fp():
     # Carga archivos Costo_fp_sinCYD_*.xlsx (un archivo por mes).
     data_dir = _get_data_dir()
@@ -606,6 +711,12 @@ except Exception as e:
     df_sic_trend = pd.DataFrame()
 
 try:
+    df_sic_rutas = load_sicetac_rutas_3s3()
+except Exception as e:
+    st.error("Error cargando SICETAC rutas: {}".format(e))
+    df_sic_rutas = pd.DataFrame()
+
+try:
     df_costos = load_costos_fp()
 except Exception as e:
     st.error("Error cargando Costos FP: {}".format(e))
@@ -624,6 +735,7 @@ pagina = st.sidebar.radio(
         "📦 Estadisticas de Carga",
         "💰 Comparativo FP y FM",
         "📋 Tabla Consolidada",
+        "🔄 Comparativo SICETAC",
     ],
     label_visibility="collapsed",
 )
@@ -2181,6 +2293,411 @@ elif pagina == "📋 Tabla Consolidada":
         st.plotly_chart(fig_consol, width="stretch")
 
 
+# ======================================================================
+# PAGINA 5: COMPARATIVO SICETAC (rutas 3S3 Estacas General)
+# ======================================================================
+elif pagina == "🔄 Comparativo SICETAC":
+    st.title("Comparativo SICETAC por Rutas")
+    st.caption(
+        "Comparacion de tarifas SICETAC entre dos periodos "
+        "- 3S3 Estacas General (Carga Normal)"
+    )
+
+    if df_sic_rutas.empty:
+        st.warning("No hay datos SICETAC de rutas cargados.")
+    else:
+        # Periodos disponibles
+        periodos_disp = sorted(
+            df_sic_rutas["PERIODO"].astype(str).unique(), reverse=True
+        )
+
+        if len(periodos_disp) < 2:
+            st.warning(
+                "Se necesitan al menos 2 periodos para comparar. "
+                "Solo hay: {}".format(", ".join(periodos_disp))
+            )
+        else:
+            # Etiqueta legible para selectbox
+            def _periodo_label(p):
+                if len(str(p)) >= 6:
+                    m = int(str(p)[4:6])
+                    return "{} {}".format(
+                        MESES_NOMBRE.get(m, str(m)).capitalize(),
+                        str(p)[:4],
+                    )
+                return str(p)
+
+            col_s1, col_s2 = st.columns(2)
+            with col_s1:
+                mes_a_idx = min(1, len(periodos_disp) - 1)
+                mes_a = st.selectbox(
+                    "Mes Base (anterior)",
+                    periodos_disp,
+                    index=mes_a_idx,
+                    format_func=_periodo_label,
+                    key="sic_comp_mes_a",
+                )
+            with col_s2:
+                mes_b = st.selectbox(
+                    "Mes Comparacion (reciente)",
+                    periodos_disp,
+                    index=0,
+                    format_func=_periodo_label,
+                    key="sic_comp_mes_b",
+                )
+
+            if mes_a == mes_b:
+                st.warning("Seleccione dos periodos diferentes.")
+            else:
+                lbl_a = _periodo_label(mes_a)
+                lbl_b = _periodo_label(mes_b)
+
+                df_a = df_sic_rutas[
+                    df_sic_rutas["PERIODO"].astype(str) == str(mes_a)
+                ].copy()
+                df_b = df_sic_rutas[
+                    df_sic_rutas["PERIODO"].astype(str) == str(mes_b)
+                ].copy()
+
+                # Merge por ruta (ORIGEN + DESTINO)
+                df_comp = pd.merge(
+                    df_a,
+                    df_b,
+                    on=["ORIGEN", "NOMORIGEN", "DESTINO", "NOMDESTINO"],
+                    how="outer",
+                    suffixes=("_A", "_B"),
+                    indicator=True,
+                )
+
+                # Rutas en ambos meses
+                df_ambos = df_comp[df_comp["_merge"] == "both"].copy()
+                # Rutas solo en mes B (nuevas)
+                df_nuevas = df_comp[
+                    df_comp["_merge"] == "right_only"
+                ].copy()
+                # Rutas solo en mes A (eliminadas)
+                df_eliminadas = df_comp[
+                    df_comp["_merge"] == "left_only"
+                ].copy()
+
+                # --- Tabla comparativa de rutas comunes ---
+                st.subheader(
+                    "Rutas comunes: {} vs {}".format(lbl_a, lbl_b)
+                )
+
+                if df_ambos.empty:
+                    st.info("No hay rutas comunes entre ambos periodos.")
+                else:
+                    df_ambos["Diferencia"] = (
+                        df_ambos["VALOR_B"] - df_ambos["VALOR_A"]
+                    )
+                    df_ambos["Variacion_Pct"] = (
+                        df_ambos["Diferencia"]
+                        / df_ambos["VALOR_A"].replace(0, float("nan"))
+                        * 100
+                    )
+
+                    # Preparar tabla de visualizacion
+                    tbl = df_ambos[[
+                        "ORIGEN", "NOMORIGEN", "DESTINO", "NOMDESTINO",
+                        "VALOR_A", "VALOR_B", "Diferencia",
+                        "Variacion_Pct",
+                        "DISTANCIA_A", "DISTANCIA_B",
+                        "VALORHORA_A", "VALORHORA_B",
+                    ]].copy()
+
+                    tbl = tbl.rename(columns={
+                        "ORIGEN": "Origen DIVIPOLA",
+                        "NOMORIGEN": "Municipio Origen",
+                        "DESTINO": "Destino DIVIPOLA",
+                        "NOMDESTINO": "Municipio Destino",
+                        "VALOR_A": "CPK {} ($)".format(lbl_a),
+                        "VALOR_B": "CPK {} ($)".format(lbl_b),
+                        "Diferencia": "Diferencia ($)",
+                        "Variacion_Pct": "Variacion %",
+                        "DISTANCIA_A": "Distancia {}".format(lbl_a),
+                        "DISTANCIA_B": "Distancia {}".format(lbl_b),
+                        "VALORHORA_A": "ValorHora {}".format(lbl_a),
+                        "VALORHORA_B": "ValorHora {}".format(lbl_b),
+                    })
+
+                    tbl = tbl.sort_values(
+                        "Variacion %", ascending=True
+                    ).reset_index(drop=True)
+
+                    # KPIs resumen
+                    col_k1, col_k2, col_k3, col_k4 = st.columns(4)
+                    col_k1.metric(
+                        "Rutas comunes",
+                        "{:,.0f}".format(len(df_ambos)),
+                    )
+                    prom_var = tbl["Variacion %"].mean()
+                    col_k2.metric(
+                        "Variacion promedio",
+                        "{:+.2f}%".format(prom_var)
+                        if pd.notna(prom_var) else "-",
+                    )
+                    sube = (tbl["Variacion %"] > 0).sum()
+                    baja = (tbl["Variacion %"] < 0).sum()
+                    igual = (tbl["Variacion %"] == 0).sum()
+                    col_k3.metric("Suben", "{:,.0f}".format(sube))
+                    col_k4.metric("Bajan", "{:,.0f}".format(baja))
+
+                    # Filtro de busqueda por municipio
+                    buscar = st.text_input(
+                        "Buscar municipio (origen o destino)",
+                        key="sic_comp_buscar",
+                    )
+                    if buscar:
+                        buscar_up = buscar.strip().upper()
+                        tbl = tbl[
+                            tbl["Municipio Origen"].str.upper().str.contains(
+                                buscar_up, na=False
+                            )
+                            | tbl["Municipio Destino"].str.upper().str.contains(
+                                buscar_up, na=False
+                            )
+                        ]
+
+                    # Color para variacion
+                    def _color_var_sic(val):
+                        if pd.isna(val):
+                            return ""
+                        if val > 0:
+                            return "color: #e34948"
+                        elif val < 0:
+                            return "color: #1baf7a"
+                        return ""
+
+                    cpk_a_col = "CPK {} ($)".format(lbl_a)
+                    cpk_b_col = "CPK {} ($)".format(lbl_b)
+                    dist_a_col = "Distancia {}".format(lbl_a)
+                    dist_b_col = "Distancia {}".format(lbl_b)
+                    vh_a_col = "ValorHora {}".format(lbl_a)
+                    vh_b_col = "ValorHora {}".format(lbl_b)
+
+                    styled_tbl = tbl.style.format(
+                        {
+                            cpk_a_col: "${:,.0f}",
+                            cpk_b_col: "${:,.0f}",
+                            "Diferencia ($)": "${:+,.0f}",
+                            "Variacion %": "{:+.2f}%",
+                            dist_a_col: "{:,.0f}",
+                            dist_b_col: "{:,.0f}",
+                            vh_a_col: "${:,.0f}",
+                            vh_b_col: "${:,.0f}",
+                        },
+                        na_rep="-",
+                    ).map(
+                        _color_var_sic,
+                        subset=["Diferencia ($)", "Variacion %"],
+                    )
+
+                    st.dataframe(
+                        styled_tbl,
+                        width="stretch",
+                        hide_index=True,
+                        height=min(600, (len(tbl) + 1) * 38),
+                    )
+
+                    # Grafico top 10 subidas y bajadas
+                    st.divider()
+                    col_g1, col_g2 = st.columns(2)
+
+                    with col_g1:
+                        top_bajan = tbl.head(10).copy()
+                        if not top_bajan.empty:
+                            top_bajan["Ruta"] = (
+                                top_bajan["Municipio Origen"].str.split(
+                                    " "
+                                ).str[0]
+                                + " > "
+                                + top_bajan["Municipio Destino"].str.split(
+                                    " "
+                                ).str[0]
+                            )
+                            fig_b = go.Figure()
+                            fig_b.add_trace(
+                                go.Bar(
+                                    y=top_bajan["Ruta"],
+                                    x=top_bajan["Variacion %"],
+                                    orientation="h",
+                                    marker=dict(
+                                        color=COLORS["green"],
+                                        cornerradius=4,
+                                    ),
+                                    text=[
+                                        "{:+.2f}%".format(v)
+                                        for v in top_bajan["Variacion %"]
+                                    ],
+                                    textposition="outside",
+                                    textfont=dict(size=9),
+                                    hovertemplate=(
+                                        "<b>%{y}</b><br>"
+                                        "Variacion: %{x:+.2f}%"
+                                        "<extra></extra>"
+                                    ),
+                                )
+                            )
+                            chart_layout(
+                                fig_b,
+                                "Top 10 rutas que mas bajan",
+                                height=400,
+                            )
+                            fig_b.update_layout(
+                                xaxis_ticksuffix="%",
+                                yaxis=dict(autorange="reversed"),
+                            )
+                            st.plotly_chart(fig_b, width="stretch")
+
+                    with col_g2:
+                        top_suben = tbl.tail(10).sort_values(
+                            "Variacion %", ascending=False
+                        ).copy()
+                        if not top_suben.empty:
+                            top_suben["Ruta"] = (
+                                top_suben["Municipio Origen"].str.split(
+                                    " "
+                                ).str[0]
+                                + " > "
+                                + top_suben["Municipio Destino"].str.split(
+                                    " "
+                                ).str[0]
+                            )
+                            fig_s = go.Figure()
+                            fig_s.add_trace(
+                                go.Bar(
+                                    y=top_suben["Ruta"],
+                                    x=top_suben["Variacion %"],
+                                    orientation="h",
+                                    marker=dict(
+                                        color=COLORS["red"],
+                                        cornerradius=4,
+                                    ),
+                                    text=[
+                                        "{:+.2f}%".format(v)
+                                        for v in top_suben["Variacion %"]
+                                    ],
+                                    textposition="outside",
+                                    textfont=dict(size=9),
+                                    hovertemplate=(
+                                        "<b>%{y}</b><br>"
+                                        "Variacion: %{x:+.2f}%"
+                                        "<extra></extra>"
+                                    ),
+                                )
+                            )
+                            chart_layout(
+                                fig_s,
+                                "Top 10 rutas que mas suben",
+                                height=400,
+                            )
+                            fig_s.update_layout(
+                                xaxis_ticksuffix="%",
+                                yaxis=dict(autorange="reversed"),
+                            )
+                            st.plotly_chart(fig_s, width="stretch")
+
+                # --- Rutas nuevas (solo en mes B) ---
+                st.divider()
+                st.subheader(
+                    "Rutas nuevas en {} (no estaban en {})".format(
+                        lbl_b, lbl_a
+                    )
+                )
+
+                if df_nuevas.empty:
+                    st.info(
+                        "No hay rutas nuevas en {}.".format(lbl_b)
+                    )
+                else:
+                    tbl_n = df_nuevas[[
+                        "ORIGEN", "NOMORIGEN", "DESTINO", "NOMDESTINO",
+                        "VALOR_B", "DISTANCIA_B", "VALORHORA_B",
+                    ]].copy()
+                    tbl_n = tbl_n.rename(columns={
+                        "ORIGEN": "Origen DIVIPOLA",
+                        "NOMORIGEN": "Municipio Origen",
+                        "DESTINO": "Destino DIVIPOLA",
+                        "NOMDESTINO": "Municipio Destino",
+                        "VALOR_B": "CPK ($)",
+                        "DISTANCIA_B": "Distancia",
+                        "VALORHORA_B": "ValorHora",
+                    })
+                    tbl_n = tbl_n.sort_values(
+                        "CPK ($)", ascending=False
+                    ).reset_index(drop=True)
+
+                    st.write(
+                        "**{}** rutas nuevas encontradas".format(
+                            len(tbl_n)
+                        )
+                    )
+
+                    st.dataframe(
+                        tbl_n.style.format(
+                            {
+                                "CPK ($)": "${:,.0f}",
+                                "Distancia": "{:,.0f}",
+                                "ValorHora": "${:,.0f}",
+                            },
+                            na_rep="-",
+                        ),
+                        width="stretch",
+                        hide_index=True,
+                        height=min(400, (len(tbl_n) + 1) * 38),
+                    )
+
+                # --- Rutas eliminadas (solo en mes A) ---
+                st.subheader(
+                    "Rutas eliminadas en {} (estaban en {})".format(
+                        lbl_b, lbl_a
+                    )
+                )
+
+                if df_eliminadas.empty:
+                    st.info(
+                        "No se eliminaron rutas respecto a {}.".format(
+                            lbl_a
+                        )
+                    )
+                else:
+                    tbl_e = df_eliminadas[[
+                        "ORIGEN", "NOMORIGEN", "DESTINO", "NOMDESTINO",
+                        "VALOR_A", "DISTANCIA_A", "VALORHORA_A",
+                    ]].copy()
+                    tbl_e = tbl_e.rename(columns={
+                        "ORIGEN": "Origen DIVIPOLA",
+                        "NOMORIGEN": "Municipio Origen",
+                        "DESTINO": "Destino DIVIPOLA",
+                        "NOMDESTINO": "Municipio Destino",
+                        "VALOR_A": "CPK ($)",
+                        "DISTANCIA_A": "Distancia",
+                        "VALORHORA_A": "ValorHora",
+                    })
+                    tbl_e = tbl_e.sort_values(
+                        "CPK ($)", ascending=False
+                    ).reset_index(drop=True)
+
+                    st.write(
+                        "**{}** rutas eliminadas".format(len(tbl_e))
+                    )
+
+                    st.dataframe(
+                        tbl_e.style.format(
+                            {
+                                "CPK ($)": "${:,.0f}",
+                                "Distancia": "{:,.0f}",
+                                "ValorHora": "${:,.0f}",
+                            },
+                            na_rep="-",
+                        ),
+                        width="stretch",
+                        hide_index=True,
+                        height=min(400, (len(tbl_e) + 1) * 38),
+                    )
+
+
 # --- Footer ---
 st.sidebar.divider()
 st.sidebar.caption("Datos: RNDC - Ministerio de Transporte")
@@ -2219,6 +2736,11 @@ with st.sidebar.expander("Diagnostico"):
         )
     )
     st.write("**Costos FP:** {} filas".format(df_costos.shape[0]))
+    st.write(
+        "**SICETAC rutas 3S3:** {} filas".format(
+            df_sic_rutas.shape[0] if not df_sic_rutas.empty else 0
+        )
+    )
     if _load_log:
         st.divider()
         st.write("**Log de carga:**")
