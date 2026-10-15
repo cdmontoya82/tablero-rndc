@@ -2463,11 +2463,11 @@ elif pagina == "🔄 Comparativo SICETAC":
                     def _color_var_sic(val):
                         if pd.isna(val):
                             return ""
-                        if val > 0:
+                        if val < 0:
                             return "color: #e34948"
-                        elif val < 0:
+                        elif val > 0:
                             return "color: #1baf7a"
-                        return ""
+                        return "color: #2a78d6"
 
                     cpk_a_col = "CPK {} ($)".format(lbl_a)
                     cpk_b_col = "CPK {} ($)".format(lbl_b)
